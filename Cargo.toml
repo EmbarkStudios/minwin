@@ -7,5 +7,7 @@ edition = "2021"
 camino = "1.1"
 clap = { version = "4.0", features = ["derive"] }
 rayon = "1.5"
+# When bumping versions, run `cargo run --manifest-path update/Cargo.toml` to
+# get the winmd files that match the publish commit
 windows-metadata = "0.43"
 windows-bindgen = "0.43"
