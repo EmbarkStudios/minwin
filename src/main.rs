@@ -1,24 +1,24 @@
+use camino::Utf8PathBuf as PathBuf;
+use clap::Parser;
 use rayon::prelude::*;
-use std::collections::*;
-use std::io::prelude::*;
 use windows_bindgen as bindgen;
 use windows_metadata as metadata;
 
+#[derive(clap::Parser)]
+struct Cmd {
+    /// The file to emit the bindings to, defaults to stdout if not specified
+    #[clap(short, long)]
+    output: Option<PathBuf>,
+    /// Disable formatting via `rustfmt`
+    #[clap(long)]
+    no_fmt: bool,
+    /// The functions and/or constants to bindgen
+    items: Vec<String>,
+}
+
 fn main() {
-    let mut rustfmt = true;
-    let mut expect_namespace = false;
-    let mut namespace = String::new();
-    for arg in std::env::args() {
-        match arg.as_str() {
-            "-p" => rustfmt = false,
-            "-n" => expect_namespace = true,
-            _ => {
-                if expect_namespace {
-                    namespace = arg;
-                }
-            }
-        }
-    }
+    let cmd = Cmd::parse();
+
     let mut output = std::path::PathBuf::from("crates/libs/sys/src/Windows");
     if namespace.is_empty() {
         let _ = std::fs::remove_dir_all(&output);
