@@ -12,8 +12,12 @@ struct Cmd {
     /// Disable formatting via `rustfmt`
     #[clap(long)]
     no_fmt: bool,
-    /// The functions and/or constants to bindgen
-    items: Vec<String>,
+    /// The specific package to find and generate bindings for
+    ///
+    /// If not specified and used within a workspace, bindings are generated
+    /// for all crates
+    #[clap(short, long)]
+    package: Option<String>,
 }
 
 fn main() {
