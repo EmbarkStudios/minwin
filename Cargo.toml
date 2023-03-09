@@ -27,6 +27,7 @@ tracing-subscriber = { version = "0.3", default-features = false, features = [
     "fmt",
     "json",
 ] }
+ustr = "0.9"
 # When bumping versions, run `cargo run --manifest-path update/Cargo.toml` to
 # get the winmd files that match the publish commit
 windows-metadata = "0.44"

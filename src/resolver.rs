@@ -1,13 +1,14 @@
 use anyhow::Context as _;
 use rayon::prelude::*;
 use std::collections::BTreeMap;
+use ustr::{Ustr, UstrMap};
 use windows_metadata::reader::{self, File, Reader};
 
-pub struct Tree {
+pub struct MetadataFiles {
     files: Vec<File>,
 }
 
-impl Tree {
+impl MetadataFiles {
     pub fn new() -> anyhow::Result<Self> {
         let mds = ["Windows", "Windows.Win32", "Windows.Win32.Interop"];
 
@@ -15,7 +16,8 @@ impl Tree {
 
         mds.into_par_iter()
             .map(|p| -> anyhow::Result<File> {
-                let compressed = std::fs::read("md/{p}/.winmd.zstd")?;
+                let compressed =
+                    std::fs::read(format!("/home/jake/code/minwin/md/{p}.winmd.zstd"))?;
                 let decompressed = zstd::decode_all(std::io::Cursor::new(compressed))?;
                 Ok(File::from_buffer(decompressed, format!("{p}.winmd"))?)
             })
@@ -30,6 +32,7 @@ impl Tree {
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum Builtin {
     Void,
+    Never,
     Bool,
     Float,
     Double,
@@ -88,11 +91,10 @@ impl TryFrom<reader::Type> for Builtin {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum QualType<'tree> {
+pub enum QualType {
     Pointer {
         is_const: bool,
-        is_pointee_const: bool,
-        pointee: Box<QualType<'tree>>,
+        pointee: Box<QualType>,
     },
     // Reference {
     //     is_const: bool,
@@ -100,14 +102,14 @@ pub enum QualType<'tree> {
     // },
     Builtin(Builtin),
     FunctionPointer {
-        name: &'tree str,
+        name: Ustr,
     },
     Array {
-        element: Box<QualType<'tree>>,
+        element: Box<QualType>,
         len: u32,
     },
     Enum {
-        name: &'tree str,
+        name: Ustr,
         //cxx_qt: &'ast str,
         //repr: Builtin,
     },
@@ -116,70 +118,21 @@ pub enum QualType<'tree> {
     //     repr: Builtin,
     // },
     Record {
-        name: &'tree str,
+        name: Ustr,
     },
     // TemplateTypedef {
     //     name: String,
     // },
 }
 
-impl<'tree> TryFrom<reader::Type> for QualType<'tree> {
-    type Error = anyhow::Error;
-
-    fn try_from(ty: reader::Type) -> anyhow::Result<Self> {
-        use reader::Type;
-
-        fn resolve_ptr<'tree>(
-            inner: Box<Type>,
-            depth: usize,
-            is_const: bool,
-        ) -> anyhow::Result<QualType<'tree>> {
-            let pointee = if depth > 1 {
-                resolve_ptr(inner, depth - 1, is_const)?
-            } else {
-                (*inner).try_into()?
-            };
-
-            Ok(QualType::Pointer {
-                is_const: false,
-                is_pointee_const: is_const,
-                pointee: Box::new(pointee),
-            })
-        }
-
-        let qt = match ty {
-            Type::MutPtr((inner, depth)) => resolve_ptr(inner, depth, false)?,
-            Type::ConstPtr((inner, depth)) => resolve_ptr(inner, depth, true)?,
-            Type::Win32Array((ele, len)) => Self::Array {
-                element: Box::new((*ele).try_into()?),
-                len: len as u32,
-            },
-            Type::String
-            | Type::IUnknown
-            | Type::IInspectable
-            | Type::TypeName
-            | Type::GenericParam(_)
-            | Type::WinrtArray(_)
-            | Type::WinrtArrayRef(_)
-            | Type::WinrtConstRef(_)
-            | Type::TypeDef(_) => {
-                anyhow::bail!("type is not supported");
-            }
-            other => Self::Builtin(other.try_into()?),
-        };
-
-        Ok(qt)
-    }
-}
-
 #[derive(Debug)]
-pub struct Item<'tree> {
-    pub name: &'tree str,
-    pub kind: QualType<'tree>,
+pub struct Item {
+    pub name: Ustr,
+    pub kind: QualType,
 }
 
 #[derive(Debug, Copy, Clone)]
-enum Layout {
+pub enum Layout {
     Packed(u32),
     Align(u32),
 }
@@ -197,19 +150,19 @@ bitflags::bitflags! {
 }
 
 #[derive(Debug)]
-pub struct Record<'tree> {
-    fields: Vec<Item<'tree>>,
-    layout: Option<Layout>,
-    attrs: RecAttrs,
-    nested: Vec<Record<'tree>>,
+pub struct Record {
+    pub fields: Vec<Item>,
+    pub layout: Option<Layout>,
+    pub attrs: RecAttrs,
+    pub nested: Vec<Record>,
 }
 
 #[derive(Debug)]
-pub struct Func<'tree> {
-    params: Vec<Item<'tree>>,
-    ret: Option<QualType<'tree>>,
-    module: Option<&'tree str>,
-    is_system: bool,
+pub struct Func {
+    pub params: Vec<Item>,
+    pub ret: Option<QualType>,
+    pub module: Option<Ustr>,
+    pub is_system: bool,
 }
 
 pub struct Value(pub reader::Value);
@@ -238,134 +191,207 @@ impl fmt::Debug for Value {
             Value::F32(v) => write!(f, "{v}: f32"),
             Value::F64(v) => write!(f, "{v}: f64"),
             Value::String(s) => f.write_str(s),
-            Value::TypeDef(td) => unreachable!("uhm...typedef"),
+            Value::TypeDef(_td) => unreachable!("uhm...typedef"),
         }
     }
 }
 
 #[derive(Debug)]
-pub struct EnumVariant<'tree> {
-    name: &'tree str,
-    value: Value,
+pub struct EnumVariant {
+    pub name: Ustr,
+    pub value: Value,
 }
 
 #[derive(Debug)]
-pub struct Enum<'tree> {
-    repr: Builtin,
-    variants: Vec<EnumVariant<'tree>>,
+pub struct Enum {
+    pub repr: Builtin,
+    pub variants: Vec<EnumVariant>,
 }
 
 #[derive(Debug)]
-pub struct Constant<'tree> {
-    value: Value,
-    kind: QualType<'tree>,
-    needs_conversion: bool,
-    is_ansi: bool,
+pub struct Constant {
+    pub value: Value,
+    pub kind: QualType,
+    pub needs_conversion: bool,
 }
 
-pub struct Resolver<'tree> {
-    trees: Vec<&'tree reader::Tree<'tree>>,
-    reader: reader::Reader<'tree>,
-    constants: BTreeMap<&'tree str, Constant<'tree>>,
-    functions: BTreeMap<&'tree str, Func<'tree>>,
-    records: BTreeMap<&'tree str, Vec<Record<'tree>>>,
-    enums: BTreeMap<&'tree str, Enum<'tree>>,
-    function_pointers: BTreeMap<&'tree str, Func<'tree>>,
+pub struct Resolver {
+    pub namespaces: Vec<(Ustr, TreeItems)>,
 }
 
 #[derive(Default)]
-struct TreeItems<'tree> {
-    constants: BTreeMap<&'tree str, Constant<'tree>>,
-    functions: BTreeMap<&'tree str, Func<'tree>>,
-    records: BTreeMap<&'tree str, Vec<Record<'tree>>>,
-    enums: BTreeMap<&'tree str, Enum<'tree>>,
-    function_pointers: BTreeMap<&'tree str, Func<'tree>>,
+pub struct TreeItems {
+    pub constants: UstrMap<Constant>,
+    pub functions: UstrMap<Vec<Func>>,
+    pub records: UstrMap<Vec<Record>>,
+    pub enums: UstrMap<Enum>,
+    pub function_pointers: UstrMap<Vec<Func>>,
 }
 
-impl<'tree> TreeItems<'tree> {
-    fn try_merge(&mut self, other: TreeItems<'tree>) -> anyhow::Result<()> {
-        for (k, v) in other.constants {
-            if let Some(old) = self.constants.insert(k, v) {
-                anyhow::bail!("a constant named '{k}' already existed: {old:?}");
-            }
-        }
+impl Resolver {
+    pub fn flatten(md: &MetadataFiles) -> anyhow::Result<Self> {
+        let reader = reader::Reader::new(&md.files);
 
-        for (k, v) in other.functions {
-            if let Some(old) = self.functions.insert(k, v) {
-                anyhow::bail!("a function named '{k}' already existed: {old:?}");
-            }
-        }
+        // windows-sys doesn't care about these, so neither do we
+        const EXCLUDED_NAMESPACES: &[&str] = &[
+            "Windows.Win32.AI.MachineLearning",
+            "Windows.Win32.Graphics.CompositionSwapchain",
+            "Windows.Win32.Graphics.Direct2D",
+            "Windows.Win32.Graphics.Direct3D",
+            "Windows.Win32.Graphics.Direct3D10",
+            "Windows.Win32.Graphics.Direct3D11",
+            "Windows.Win32.Graphics.Direct3D11on12",
+            "Windows.Win32.Graphics.Direct3D12",
+            "Windows.Win32.Graphics.Direct3D9",
+            "Windows.Win32.Graphics.Direct3D9on12",
+            "Windows.Win32.Graphics.DirectComposition",
+            "Windows.Win32.Graphics.DirectDraw",
+            "Windows.Win32.Graphics.DirectManipulation",
+            "Windows.Win32.Graphics.DirectWrite",
+            "Windows.Win32.Graphics.DXCore",
+            "Windows.Win32.Graphics.Dxgi",
+            "Windows.Win32.Graphics.Imaging",
+            "Windows.Win32.Interop",
+            "Windows.Win32.Media.Audio.DirectSound",
+            "Windows.Win32.Media.DirectShow",
+            "Windows.Win32.Media.MediaFoundation",
+            "Windows.Win32.Media.PictureAcquisition",
+            "Windows.Win32.System.Diagnostics.Debug.WebApp",
+            "Windows.Win32.System.SideShow",
+            "Windows.Win32.System.TransactionServer",
+            "Windows.Win32.System.WinRT",
+            "Windows.Win32.Web.MsHtml",
+            "Windows.Win32.UI.Xaml",
+        ];
 
-        for (k, v) in other.records {
-            if let Some(old) = self.records.insert(k, v) {
-                anyhow::bail!("a record named '{k}' already existed: {old:?}");
-            }
-        }
-
-        for (k, v) in other.enums {
-            if let Some(old) = self.enums.insert(k, v) {
-                anyhow::bail!("an enum named '{k}' already existed: {old:?}");
-            }
-        }
-
-        for (k, v) in other.function_pointers {
-            if let Some(old) = self.function_pointers.insert(k, v) {
-                anyhow::bail!("a function pointer named '{k}' already existed: {old:?}");
-            }
-        }
-
-        Ok(())
-    }
-}
-
-impl<'tree> Resolver<'tree> {
-    pub fn flatten(root: &'tree Tree) -> anyhow::Result<Self> {
-        let reader = reader::Reader::new(&root.files);
         let win32 = reader
-            .tree("Windows.Win32", &[])
+            .tree("Windows.Win32", EXCLUDED_NAMESPACES)
             .context("failed to find Windows.Win32 namespace")?;
 
-        let trees = reader::Tree {
+        let root = reader::Tree {
             namespace: "Windows",
             nested: BTreeMap::from([("Win32", win32)]),
-        }
-        .flatten();
-        let merged = trees
+        };
+        let trees = root.flatten();
+
+        let namespaces = trees
             .par_iter()
-            .map(|tree| Self::get_items(&reader, tree))
+            .map(|tree| Self::get_items(&reader, tree).map(|ti| (Ustr::from(tree.namespace), ti)))
+            .try_fold(
+                || Vec::with_capacity(trees.len()),
+                |mut v, t| -> anyhow::Result<_> {
+                    v.push(t?);
+                    Ok(v)
+                },
+            )
             .try_reduce(
-                || TreeItems::default(),
-                |mut a, b| {
-                    a.try_merge(b)?;
+                || Vec::with_capacity(trees.len()),
+                |mut a, mut b| {
+                    a.append(&mut b);
                     Ok(a)
                 },
             )?;
 
-        Ok(Self {
-            trees,
-            reader,
-            constants: merged.constants,
-            functions: merged.functions,
-            records: merged.records,
-            enums: merged.enums,
-            function_pointers: merged.function_pointers,
-        })
+        Ok(Self { namespaces })
     }
 
-    fn get_items(reader: &Reader<'tree>, tree: &reader::Tree) -> anyhow::Result<TreeItems<'tree>> {
+    fn resolve_ptr(
+        reader: &Reader<'_>,
+        inner: Box<reader::Type>,
+        depth: usize,
+        is_const: bool,
+    ) -> anyhow::Result<Option<QualType>> {
+        let pointee = if depth > 1 {
+            let Some(inner) = Self::resolve_ptr(reader, inner, depth - 1, is_const)? else { return Ok(None) };
+            inner
+        } else if let Some(inner) = Self::resolve_type(reader, *inner)? {
+            inner
+        } else {
+            return Ok(None);
+        };
+
+        Ok(Some(QualType::Pointer {
+            is_const,
+            pointee: Box::new(pointee),
+        }))
+    }
+
+    fn resolve_type(reader: &Reader<'_>, ty: reader::Type) -> anyhow::Result<Option<QualType>> {
+        use reader::Type;
+
+        let qt = match ty {
+            Type::MutPtr((inner, depth)) => {
+                let Some(inner) = Self::resolve_ptr(reader, inner, depth, false)? else { return Ok(None) };
+                inner
+            }
+            Type::ConstPtr((inner, depth)) => {
+                let Some(inner) = Self::resolve_ptr(reader, inner, depth, true)? else { return Ok(None) };
+                inner
+            }
+            Type::Win32Array((ele, len)) => {
+                if let Some(ele) = Self::resolve_type(reader, *ele)? {
+                    QualType::Array {
+                        element: Box::new(ele),
+                        len: len as u32,
+                    }
+                } else {
+                    tracing::debug!("array element was not valid");
+                    return Ok(None);
+                }
+            }
+            Type::TypeDef((td, _)) => {
+                let type_name = reader.type_def_type_name(td);
+                let kind = reader.type_def_kind(td);
+
+                let name = type_name.name.into();
+
+                use reader::TypeKind;
+                match kind {
+                    TypeKind::Struct => QualType::Record { name },
+                    TypeKind::Delegate => QualType::FunctionPointer { name },
+                    TypeKind::Enum => QualType::Enum { name },
+                    invalid => {
+                        tracing::debug!("encountered typedef '{type_name}' which is the invalid type kind '{invalid:?}'");
+                        return Ok(None);
+                    }
+                }
+            }
+            Type::String
+            | Type::IUnknown
+            | Type::IInspectable
+            | Type::TypeName
+            | Type::GenericParam(_)
+            | Type::WinrtArray(_)
+            | Type::WinrtArrayRef(_)
+            | Type::WinrtConstRef(_) => {
+                tracing::debug!("type is not supported");
+                return Ok(None);
+            }
+            other => QualType::Builtin(other.try_into()?),
+        };
+
+        Ok(Some(qt))
+    }
+
+    fn get_items(reader: &Reader<'_>, tree: &reader::Tree<'_>) -> anyhow::Result<TreeItems> {
         use reader::TypeKind;
 
-        let mut constants = BTreeMap::new();
-        let mut functions = BTreeMap::new();
-        let mut records = BTreeMap::new();
-        let mut enums = BTreeMap::new();
-        let mut function_pointers = BTreeMap::new();
+        let mut constants = UstrMap::default();
+        let mut functions = UstrMap::default();
+        let mut records = UstrMap::default();
+        let mut enums = UstrMap::default();
+        let mut function_pointers = UstrMap::default();
 
         for def in reader.namespace_types(tree.namespace) {
             let type_name = reader.type_def_type_name(def);
             let name = type_name.name;
-
             let kind = reader.type_def_kind(def);
+
+            let s = tracing::debug_span!("get_def", typedef = name, kind = ?kind);
+            let _s = s.enter();
+
+            let name = name.into();
+
             match kind {
                 // Because winmd is a .NET format, and .NET doesn't have free functions
                 // nor constants, we need to look in "classes" to get the actual win32
@@ -380,21 +406,30 @@ impl<'tree> Resolver<'tree> {
                         || -> anyhow::Result<()> {
                             for method in reader.type_def_methods(def) {
                                 let func_name = reader.method_def_name(method);
-                                let func = Self::get_func(reader, method)?;
-                                if let Some(old) = functions.insert(func_name, func) {
-                                    anyhow::bail!(
-                                        "a function named '{func_name}' already existed: {old:?}"
-                                    );
-                                }
+                                let s = tracing::debug_span!("get_func", function = func_name);
+                                let _s = s.enter();
+                                let Some(func) = Self::get_func(reader, method).with_context(|| {
+                                    format!("failed to resolve function '{func_name}'")
+                                })? else { continue };
+
+                                functions
+                                    .entry(func_name.into())
+                                    .or_insert(Vec::new())
+                                    .push(func);
                             }
 
                             Ok(())
                         },
                         || -> anyhow::Result<()> {
                             for field in reader.type_def_fields(def) {
-                                let name = reader.field_name(field);
-                                let constant = Self::get_constant(reader, field)?;
-                                if let Some(old) = constants.insert(name, constant) {
+                                let cname = reader.field_name(field);
+                                let s = tracing::debug_span!("get_constant", constant = cname);
+                                let _s = s.enter();
+                                let Some(constant) =
+                                    Self::get_constant(reader, field).with_context(|| {
+                                        format!("failed to resolve constant '{cname}'")
+                                    })? else { continue; };
+                                if let Some(old) = constants.insert(cname.into(), constant) {
                                     anyhow::bail!(
                                         "a constant named '{name}' already existed: {old:?}"
                                     );
@@ -421,22 +456,27 @@ impl<'tree> Resolver<'tree> {
                         continue;
                     }
 
-                    let record = Self::get_record(reader, def)?;
+                    let Some(record) = Self::get_record(reader, def)
+                        .with_context(|| format!("failed to resolve record '{name}'"))? else { continue; };
 
                     records.entry(name).or_insert(Vec::new()).push(record);
                 }
                 TypeKind::Enum => {
-                    let enm = Self::get_enum(reader, def)?;
+                    let enm = Self::get_enum(reader, def)
+                        .with_context(|| format!("failed to resolve enum '{name}'"))?;
                     if let Some(old) = enums.insert(name, enm) {
                         anyhow::bail!("an enum named '{name}' already existed: {old:?}");
                     }
                 }
                 // Delegates are .NET speak for function pointer signatures
                 TypeKind::Delegate => {
-                    let fptr = Self::get_func_ptr(reader, def)?;
-                    if let Some(old) = function_pointers.insert(name, fptr) {
-                        anyhow::bail!("a function pointer named '{name}' already existed: {old:?}");
-                    }
+                    let Some(fptr) = Self::get_func_ptr(reader, def)
+                        .with_context(|| format!("failed to resolve function pointer '{name}'"))? else { continue; };
+
+                    function_pointers
+                        .entry(name)
+                        .or_insert(Vec::new())
+                        .push(fptr);
                 }
                 TypeKind::Interface => {
                     tracing::trace!("we don't care about interface '{name}'");
@@ -453,21 +493,26 @@ impl<'tree> Resolver<'tree> {
         })
     }
 
-    fn get_func(reader: &Reader<'tree>, def: reader::MethodDef) -> anyhow::Result<Func<'tree>> {
+    fn get_func(reader: &Reader<'_>, def: reader::MethodDef) -> anyhow::Result<Option<Func>> {
         let name = reader.method_def_name(def);
         let sig = reader.method_def_signature(def, &[]);
 
         let ret = if let Some(return_type) = sig.return_type {
-            Some(return_type.try_into()?)
+            let Some(ret) = Self::resolve_type(reader, return_type)? else {
+                tracing::debug!("skipping due to return type");
+                return Ok(None)
+            };
+            Some(ret)
         } else if reader.method_def_does_not_return(sig.def) {
-            panic!("interesting, {name} doesn't return");
+            // See eg ExitProcess
+            Some(QualType::Builtin(Builtin::Never))
         } else {
             None
         };
 
         let impl_map = reader
             .method_def_impl_map(def)
-            .with_context(|| format!("ImplMap not found for function '{name}'"))?;
+            .context("ImplMap not found")?;
 
         // Determine whether the calling convention is "system" or "C"
         let is_system = {
@@ -478,78 +523,81 @@ impl<'tree> Resolver<'tree> {
             } else if inv_attrs.conv_cdecl() {
                 false
             } else {
-                anyhow::bail!(
-                    "function {name} has invalid invoke attributes {:08x}",
-                    inv_attrs.0
-                );
+                anyhow::bail!("function has invalid invoke attributes {:08x}", inv_attrs.0);
             }
         };
 
         let module = {
             let scope = reader.impl_map_scope(impl_map);
-            reader.module_ref_name(scope)
+            reader.module_ref_name(scope).into()
         };
 
-        let params = sig
-            .params
-            .into_iter()
-            .map(|param| {
-                let name = reader.param_name(param.def);
-                let kind = param.ty.try_into()?;
+        let mut params = Vec::new();
 
-                Ok(Item { name, kind })
-            })
-            .collect::<anyhow::Result<Vec<_>>>()?;
+        for param in sig.params.into_iter() {
+            let pname = reader.param_name(param.def).into();
+            let Some(kind) = Self::resolve_type(reader, param.ty)? else {
+                tracing::debug!("skipping parameter '{pname}'");
+                return Ok(None);
+            };
 
-        Ok(Func {
+            params.push(Item { name: pname, kind });
+        }
+
+        Ok(Some(Func {
             params,
             ret,
             module: Some(module),
             is_system,
-        })
+        }))
     }
 
-    fn get_func_ptr(reader: &Reader<'tree>, def: reader::TypeDef) -> anyhow::Result<Func<'tree>> {
-        let name = reader.type_def_name(def);
+    fn get_func_ptr(reader: &Reader<'_>, def: reader::TypeDef) -> anyhow::Result<Option<Func>> {
         let method = reader.type_def_invoke_method(def);
+        let name = reader.method_def_name(method);
         let sig = reader.method_def_signature(method, &[]);
 
         let ret = if let Some(return_type) = sig.return_type {
-            Some(return_type.try_into()?)
+            let Some(ret) = Self::resolve_type(reader, return_type)? else {
+                tracing::debug!("skipping due to return type");
+                return Ok(None);
+            };
+            Some(ret)
         } else if reader.method_def_does_not_return(sig.def) {
-            panic!("interesting, function pointer {name} doesn't return");
+            Some(QualType::Builtin(Builtin::Never))
         } else {
             None
         };
 
-        let params = sig
-            .params
-            .into_iter()
-            .map(|param| {
-                let name = reader.param_name(param.def);
-                let kind = param.ty.try_into()?;
+        let mut params = Vec::new();
 
-                Ok(Item { name, kind })
-            })
-            .collect::<anyhow::Result<Vec<_>>>()?;
+        for param in sig.params.into_iter() {
+            let pname = reader.param_name(param.def).into();
+            let Some(kind) = Self::resolve_type(reader, param.ty)? else {
+                tracing::debug!("skipping due to parameter '{pname}'");
+                return Ok(None);
+            };
 
-        Ok(Func {
+            params.push(Item { name: pname, kind });
+        }
+
+        Ok(Some(Func {
             params,
             ret,
             module: None,
             is_system: true,
-        })
+        }))
     }
 
-    fn get_record(reader: &Reader<'tree>, def: reader::TypeDef) -> anyhow::Result<Record<'tree>> {
+    fn get_record(reader: &Reader<'_>, def: reader::TypeDef) -> anyhow::Result<Option<Record>> {
         let name = reader.type_def_name(def);
 
         // Check if this is actually only used as an opaque pointer
         if reader.type_def_fields(def).next().is_none() {
-            tracing::debug!("found opaque struct {name}");
-            return Ok(Record {
+            tracing::debug!("found opaque struct");
+            return Ok(Some(Record {
                 fields: vec![Item {
-                    name: "_unused",
+                    name: "_unused".into(),
                     kind: QualType::Array {
                         element: Box::new(QualType::Builtin(Builtin::UChar)),
                         len: 0,
@@ -558,7 +606,7 @@ impl<'tree> Resolver<'tree> {
                 layout: None,
                 attrs: RecAttrs::empty(),
                 nested: Vec::new(),
-            });
+            }));
         }
 
         let layout = if let Some(layout) = reader.type_def_class_layout(def) {
@@ -573,24 +621,25 @@ impl<'tree> Resolver<'tree> {
             None
         };
 
-        let fields = reader
-            .type_def_fields(def)
-            .filter_map(|f| {
-                let name = reader.field_name(f);
-                let ty = reader.field_type(f, Some(def));
-
-                if reader.field_flags(f).literal() {
-                    return None;
+        let fields = {
+            let mut fields = Vec::new();
+            for field in reader.type_def_fields(def) {
+                if reader.field_flags(field).literal() {
+                    continue;
                 }
 
-                let kind = match ty.try_into() {
-                    Ok(kind) => kind,
-                    Err(err) => return Some(Err(err)),
+                let fname = reader.field_name(field).into();
+                let ty = reader.field_type(field, Some(def));
+
+                let Some(kind) = Self::resolve_type(reader, ty)? else {
+                    tracing::debug!("skipping due to field {fname}");
+                    return Ok(None);
                 };
 
-                Some(Ok(Item { name, kind }))
-            })
-            .collect::<anyhow::Result<Vec<_>>>()?;
+                fields.push(Item { name: fname, kind });
+            }
+            fields
+        };
 
         let flags = reader.type_def_flags(def);
 
@@ -623,28 +672,36 @@ impl<'tree> Resolver<'tree> {
             }
         }
 
-        let nested = reader
-            .nested_types(def)
-            .map(|td| Self::get_record(reader, td))
-            .collect::<anyhow::Result<Vec<_>>>()?;
+        let nested = {
+            let mut nested = Vec::new();
+            for (i, td) in reader.nested_types(def).enumerate() {
+                let Some(nest) = Self::get_record(reader, td)? else {
+                    tracing::debug!("skipping due to nested record {i}");
+                    return Ok(None);
+                };
 
-        Ok(Record {
+                nested.push(nest);
+            }
+            nested
+        };
+
+        Ok(Some(Record {
             fields,
             layout,
             attrs,
             nested,
-        })
+        }))
     }
 
-    fn get_enum(reader: &Reader<'tree>, def: reader::TypeDef) -> anyhow::Result<Enum<'tree>> {
-        let type_name = reader.type_def_type_name(def);
+    fn get_enum(reader: &Reader<'_>, def: reader::TypeDef) -> anyhow::Result<Enum> {
+        //let type_name = reader.type_def_type_name(def);
         let repr = reader.type_def_underlying_type(def).try_into()?;
 
         let variants = reader
             .type_def_fields(def)
             .filter_map(|field| {
                 if reader.field_flags(field).literal() {
-                    let name = reader.field_name(field);
+                    let name = reader.field_name(field).into();
                     let constant = reader.field_constant(field)?;
                     let value = reader.constant_value(constant);
 
@@ -661,23 +718,32 @@ impl<'tree> Resolver<'tree> {
         Ok(Enum { repr, variants })
     }
 
-    fn get_constant(reader: &Reader<'tree>, def: reader::Field) -> anyhow::Result<Constant<'tree>> {
+    fn get_constant(reader: &Reader<'_>, def: reader::Field) -> anyhow::Result<Option<Constant>> {
         let name = reader.field_name(def);
 
-        let Some(constant) = reader.field_constant(def) else { anyhow::bail!("{name} is an invalid constant") };
+        let Some(constant) = reader.field_constant(def) else { return Ok(None) };
         let kind = reader.constant_type(constant);
         let needs_conversion = kind != reader.field_type(def, None).to_const();
 
-        let kind = kind.try_into()?;
+        let kind = if kind == reader::Type::String {
+            if reader.field_is_ansi(def) {
+                QualType::Builtin(Builtin::Pcstr)
+            } else {
+                QualType::Builtin(Builtin::Pcwstr)
+            }
+        } else if let Some(kind) = Self::resolve_type(reader, kind)? {
+            kind
+        } else {
+            return Ok(None);
+        };
 
         let value = reader.constant_value(constant);
 
-        Ok(Constant {
+        Ok(Some(Constant {
             value: value.into(),
             needs_conversion,
             kind,
-            is_ansi: reader.field_is_ansi(def),
-        })
+        }))
 
         // if ty == constant_type {
         //     if ty == Type::String {
