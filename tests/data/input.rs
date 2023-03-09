@@ -11,9 +11,9 @@
 mod example {
     const INFINITE: () = ();
     const ERROR_TIMEOUT: () = ();
-    fn GetLastError();
-    fn GetModuleHandleA();
-    fn GetProcAddress();
+    fn GetLastError() {}
+    fn GetModuleHandleA() {}
+    fn GetProcAddress() {}
     type WaitAddress = fn();
     type WakeByAddressSingle = fn();
 }

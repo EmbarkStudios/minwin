@@ -1,0 +1,14 @@
+---
+source: tests/parsing.rs
+expression: actual
+---
+tests/data/input.rs
+mod example
+    Constant INFINITE
+    Constant ERROR_TIMEOUT
+    Function GetLastError
+    Function GetModuleHandleA
+    Function GetProcAddress
+    FunctionPtr WaitAddress
+    FunctionPtr WakeByAddressSingle
+

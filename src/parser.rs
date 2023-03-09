@@ -1,6 +1,6 @@
 use camino::Utf8PathBuf as PathBuf;
 use cargo_metadata::Package;
-use std::ops::Range;
+use syn::{Ident, Item, ItemMod};
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 pub enum BindItemKind {
@@ -8,36 +8,55 @@ pub enum BindItemKind {
     Struct,
     Union,
     Function,
-}
-
-struct BindItemInner {
-    kind: BindItemKind,
-    name_range: Range<usize>,
-    item_range: Range<usize>,
+    Type,
+    FunctionPtr,
 }
 
 pub struct BindItem<'pi> {
+    pub module: &'pi ItemMod,
     pub kind: BindItemKind,
-    pub name: &'pi str,
-    pub full_item: &'pi str,
+    pub ident: &'pi Ident,
 }
 
 pub struct BindingFile {
     pub path: PathBuf,
-
-    bind_items: Vec<BindItemInner>,
+    file: syn::File,
+    mods: Vec<usize>,
 }
 
 impl BindingFile {
     pub fn iter_binds(&self) -> impl Iterator<Item = BindItem<'_>> {
-        self.bind_items.iter().map(|bii| BindItem {
-            kind: bii.kind,
-            name: &self.bind_block[bii.name_range.clone()],
-            full_item: &self.bind_block[bii.item_range.clone()],
-        })
+        self.mods
+            .iter()
+            .filter_map(|i| {
+                if let syn::Item::Mod(modi) = &self.file.items[*i] {
+                    Some(modi.content.as_ref()?.1.iter().filter_map(|item| {
+                        let (kind, ident) = match item {
+                            Item::Const(cnst) => (BindItemKind::Constant, &cnst.ident),
+                            Item::Fn(func) => (BindItemKind::Function, &func.sig.ident),
+                            Item::Struct(stru) => (BindItemKind::Struct, &stru.ident),
+                            Item::Union(un) => (BindItemKind::Union, &un.ident),
+                            Item::Type(ty) if matches!(*ty.ty, syn::Type::BareFn(_)) => {
+                                (BindItemKind::FunctionPtr, &ty.ident)
+                            }
+                            _ => return None,
+                        };
+
+                        Some(BindItem {
+                            module: modi,
+                            kind,
+                            ident,
+                        })
+                    }))
+                } else {
+                    None
+                }
+            })
+            .flatten()
     }
 }
 
+#[derive(Default)]
 pub struct Parser {
     files: Vec<PathBuf>,
 }
@@ -49,17 +68,22 @@ impl Parser {
     }
 
     #[inline]
-    pub fn add_crate(&mut self, krate: &Package) {
+    pub fn add_crate(&mut self, _krate: &Package) {
         //krate.manifest_path.parent().unwrap()
     }
 
     pub fn parse(&self) -> Vec<BindingFile> {
         let mut pis = Vec::new();
+
+        // Note we aren't using rayon here because syn is internally using Rc<>
         for file in &self.files {
+            let s = tracing::debug_span!("parse_file", file = file.as_str());
+            let _s = s.enter();
+
             let buf = match std::fs::read_to_string(file) {
                 Ok(buf) => buf,
                 Err(e) => {
-                    log::error!("failed to read {file}: {e}");
+                    tracing::error!(error = %e, "failed to read file");
                     continue;
                 }
             };
@@ -67,7 +91,7 @@ impl Parser {
             let parsed = match syn::parse_file(&buf) {
                 Ok(p) => p,
                 Err(e) => {
-                    log::error!("failed to parse {file}: {e}");
+                    tracing::error!(error = %e, "failed to parse file");
                     continue;
                 }
             };
@@ -76,10 +100,11 @@ impl Parser {
             let mw_mods: Vec<_> = parsed
                 .items
                 .iter()
-                .filter_map(|item| {
+                .enumerate()
+                .filter_map(|(i, item)| {
                     if let syn::Item::Mod(modi) = item {
-                        if modi.attrs.iter().any(|attr| attr.path == "minwin") {
-                            return Some(modi);
+                        if modi.attrs.iter().any(|attr| attr.path.is_ident("minwin")) {
+                            return Some(i);
                         }
                     }
 
@@ -88,18 +113,15 @@ impl Parser {
                 .collect();
 
             if mw_mods.is_empty() {
-                log::debug!("skipping {file}, no minwin modules detected");
+                tracing::debug!("skipping file, no `minwin` modules detected");
                 continue;
             }
 
-            if mw_mods.len() > 1 {
-                let len = mw_mods.len();
-
-                log::error!("{file} contains {len} minwin modules, [{}]");
-                continue;
-            }
-
-            let mw_mod = mw_mods.pop().unwrap();
+            pis.push(BindingFile {
+                path: file.clone(),
+                file: parsed,
+                mods: mw_mods,
+            });
         }
 
         pis
