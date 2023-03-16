@@ -5,18 +5,211 @@ use crate::{
 };
 use anyhow::Context as _;
 use proc_macro2::{self as pm, TokenStream};
-use quote::{format_ident, quote, TokenStreamExt};
-use ustr::{Ustr, UstrSet};
+use quote::{format_ident, quote, ToTokens, TokenStreamExt};
+use ustr::{Ustr, UstrMap};
+
+impl ToTokens for Attrs {
+    fn to_tokens(&self, ts: &mut TokenStream) {
+        let arch = self.intersection(Attrs::ARCH);
+
+        let count = arch.iter().count();
+        let arches = arch.iter().map(|a| {
+            if a.contains(Attrs::X86) {
+                "x86"
+            } else if a.contains(Attrs::X86_64) {
+                "x86_64"
+            } else if a.contains(Attrs::AARCH64) {
+                "aarch64"
+            } else {
+                unreachable!()
+            }
+        });
+
+        let cfg_parts = if count == 1 {
+            quote! { #(target_arch = #arches),* }
+        } else {
+            quote! { any(#(target_arch = #arches),*) }
+        };
+
+        ts.extend(cfg_parts);
+    }
+}
+
+impl ToTokens for Layout {
+    fn to_tokens(&self, ts: &mut TokenStream) {
+        let repr = match self {
+            Self::Align(align) => {
+                let align = pm::Literal::u8_unsuffixed(*align);
+                quote! { align(#align) }
+            }
+            Layout::Packed(pack) => {
+                let pack = pm::Literal::u8_unsuffixed(*pack);
+                quote! { packed(#pack) }
+            }
+        };
+
+        ts.extend(repr);
+    }
+}
+
+impl ToTokens for RecordLayout {
+    fn to_tokens(&self, ts: &mut TokenStream) {
+        match self {
+            Self::None => ts.extend(quote! {#[repr(C)]}),
+            Self::Agnostic(layout) => {
+                ts.extend(quote! { #[repr(C, #layout)]});
+            }
+            Self::Arch(layouts) => {
+                for al in layouts {
+                    let attrs = Attrs::from_bits(al.a).unwrap();
+                    let layout = al.l;
+
+                    ts.extend(quote! { #[cfg_attr(#attrs, repr(C, #layout))] });
+                }
+            }
+        }
+    }
+}
+
+struct OutputStream {
+    root: TokenStream,
+    libs: Vec<(Ustr, bool, TokenStream)>,
+    arches: Vec<(Attrs, Ustr, TokenStream)>,
+}
+
+impl OutputStream {
+    fn new() -> Self {
+        Self {
+            root: TokenStream::new(),
+            libs: Vec::new(),
+            arches: Vec::new(),
+        }
+    }
+
+    fn get_arch_block(&mut self, attrs: Attrs) -> &mut TokenStream {
+        let arches = attrs.intersection(Attrs::ARCH);
+
+        if arches.is_empty() {
+            &mut self.root
+        } else if let Some(ab) = self
+            .arches
+            .iter()
+            .position(|(attrs, _, _ts)| attrs.contains(arches))
+        {
+            &mut self.arches[ab].2
+        } else {
+            let mut mod_name = String::new();
+
+            for (i, arch) in arches
+                .iter()
+                .map(|a| {
+                    if a.contains(Attrs::X86) {
+                        "x86"
+                    } else if a.contains(Attrs::X86_64) {
+                        "x86_64"
+                    } else if a.contains(Attrs::AARCH64) {
+                        "aarch64"
+                    } else {
+                        unreachable!()
+                    }
+                })
+                .enumerate()
+            {
+                if i > 0 {
+                    mod_name.push('_');
+                }
+
+                mod_name.push_str(arch);
+            }
+
+            self.arches
+                .push((arches, mod_name.into(), TokenStream::new()));
+            &mut self.arches.last_mut().unwrap().2
+        }
+    }
+
+    fn get_extern_block(&mut self, name: &Ustr, is_system: bool) -> &mut TokenStream {
+        let eb = if let Some(eb) = self
+            .libs
+            .iter()
+            .position(|(lname, is, _ts)| name == lname && is_system == *is)
+        {
+            eb
+        } else {
+            self.libs.push((*name, is_system, TokenStream::new()));
+            self.libs.len() - 1
+        };
+
+        &mut self.libs[eb].2
+    }
+
+    fn finalize(self) -> TokenStream {
+        let mut root = self.root;
+
+        for (attrs, mn, ts) in self.arches {
+            let mn = format_ident!("{mn}");
+            root.extend(quote! {
+                #[cfg(#attrs)]
+                mod #mn {
+                    #ts
+                }
+
+                #[cfg(#attrs)]
+                use #mn::*;
+            });
+        }
+
+        for (lib, is_system, ts) in self.libs {
+            let lib = lib.as_str();
+            let cc = if is_system { "system" } else { "C" };
+
+            root.extend(quote! {
+                #[link(name = #lib)]
+                extern #cc {
+                    #ts
+                }
+            });
+        }
+
+        root
+    }
+}
 
 #[derive(Debug)]
 enum Item<'res> {
     Function(&'res Func),
-    Record(&'res Record),
     FunctionPointer(&'res Func),
+    Record(&'res Record),
     Constant(&'res Constant),
     Enum(&'res Enum),
     Typedef(QualType),
-    NotFound,
+}
+
+impl<'res> Item<'res> {
+    fn id(&self) -> (BindItemKind, Attrs) {
+        let (bik, mut attrs) = match self {
+            Self::Function(func) => {
+                (BindItemKind::Function, func.attrs)
+            }
+            Self::FunctionPointer(func) => {
+                (BindItemKind::FunctionPtr, func.attrs)
+            }
+            Self::Record(rec) => {
+                (if rec.attrs.contains(Attrs::UNION) { BindItemKind::Union } else { BindItemKind::Struct }, rec.attrs)
+            }
+            Self::Constant(..) => {
+                (BindItemKind::Constant, Attrs::empty())
+            }
+            Self::Enum(..) => {
+                (BindItemKind::Enum, Attrs::empty())
+            }
+            Self::Typedef(..) => {
+                (BindItemKind::Typedef, Attrs::empty())
+            }
+        };
+
+        (bik, attrs.intersection(Attrs::ARCH))
+    }
 }
 
 #[derive(Debug)]
@@ -28,17 +221,15 @@ struct ItemDef<'res> {
 }
 
 impl<'res> ItemDef<'res> {
-    fn emit(&self, ts: &mut TokenStream) -> anyhow::Result<()> {
+    fn emit(&self, os: &mut OutputStream) -> anyhow::Result<()> {
         let ident = format_ident!("{}", self.ident.as_str());
 
         match &self.item {
             Item::Function(func) => {
-                let cc = if func.is_system { "system" } else { "C" };
                 let lib = func
                     .module
                     .as_ref()
-                    .with_context(|| format!("function '{ident}' did not state its library"))?
-                    .as_str();
+                    .with_context(|| format!("function '{ident}' did not state its library"))?;
 
                 let params = func.params.iter().map(|p| {
                     let pname = format_ident!("{}", p.name.as_str());
@@ -47,22 +238,25 @@ impl<'res> ItemDef<'res> {
                     q
                 });
 
+                let ts = os.get_extern_block(lib, func.is_system);
+
+                if func.attrs.intersects(Attrs::ARCH) {
+                    let attrs = func.attrs;
+                    ts.extend(quote! {
+                        #[cfg(#attrs)]
+                    });
+                }
+
                 ts.extend(quote! {
-                    #[link(name = #lib)]
-                    extern #cc {
-                        pub fn #ident(#(#params),*)
-                    }
+                    pub fn #ident(#(#params),*)
                 });
 
-                let ret = if let Some(rt) = &func.ret {
+                if let Some(rt) = &func.ret {
                     ts.extend(quote! { -> });
                     rt.emit(ts);
                 };
 
-                ts.append(pm::TokenTree::Punct(pm::Punct::new(
-                    ';',
-                    pm::Spacing::Alone,
-                )));
+                ts.append(pm::Punct::new(';', pm::Spacing::Alone));
             }
             Item::FunctionPointer(func) => {
                 let params = func.params.iter().map(|p| {
@@ -72,11 +266,20 @@ impl<'res> ItemDef<'res> {
                     q
                 });
 
+                let ts = &mut os.root;
+
+                if func.attrs.intersects(Attrs::ARCH) {
+                    let attrs = func.attrs;
+                    ts.extend(quote! {
+                        #[cfg(#attrs)]
+                    });
+                }
+
                 ts.extend(quote! {
                     pub type #ident = Option<unsafe extern "system" fn(#(#params),*)
                 });
 
-                let ret = if let Some(rt) = &func.ret {
+                if let Some(rt) = &func.ret {
                     ts.extend(quote! { -> });
                     rt.emit(ts);
                 };
@@ -84,9 +287,9 @@ impl<'res> ItemDef<'res> {
                 ts.extend(quote! {>;});
             }
             Item::Record(rec) => {
-                fn emit_rec(rec: &Record, name: pm::Ident, ts: &mut TokenStream) {
+                fn emit_rec(rec: &Record, name: pm::Ident, os: &mut OutputStream) {
                     for (i, nested) in rec.nested.iter().enumerate() {
-                        emit_rec(nested, format_ident!("{name}_{i}"), ts);
+                        emit_rec(nested, format_ident!("{name}_{i}"), os);
                     }
 
                     let fields = rec.fields.iter().map(|f| {
@@ -97,25 +300,14 @@ impl<'res> ItemDef<'res> {
                         q
                     });
 
-                    // let repr = if let Some(layout) = rec.layout {
-                    //     match layout {
-                    //         Layout::Align(align) => {
-                    //             let align = pm::Literal::u8_unsuffixed(align);
-                    //             quote! {#[repr(C, align(#align))]}
-                    //         }
-                    //         Layout::Packed(pack) => {
-                    //             let pack = pm::Literal::u8_unsuffixed(pack);
-                    //             quote! {#[repr(C, packed(#pack))]}
-                    //         }
-                    //     }
-                    // } else {
-                    let repr = quote! {#[repr(C)]};
-                    //};
+                    let ts = os.get_arch_block(rec.attrs);
 
-                    let rec_kind = if rec.attrs.contains(RecAttrs::UNION) {
-                        pm::Ident::new("union", pm::Span::call_site())
+                    let repr = &rec.layout;
+
+                    let rec_kind = if rec.attrs.contains(Attrs::UNION) {
+                        format_ident!("union")
                     } else {
-                        pm::Ident::new("struct", pm::Span::call_site())
+                        format_ident!("struct")
                     };
 
                     ts.extend(quote! {
@@ -126,9 +318,10 @@ impl<'res> ItemDef<'res> {
                     });
                 }
 
-                emit_rec(rec, ident, ts);
+                emit_rec(rec, ident, os);
             }
             Item::Constant(cnst) => {
+                let ts = &mut os.root;
                 ts.extend(quote! {
                     const #ident:
                 });
@@ -146,6 +339,7 @@ impl<'res> ItemDef<'res> {
                 }
             }
             Item::Typedef(td) => {
+                let ts = &mut os.root;
                 ts.extend(quote! {
                     pub type #ident =
                 });
@@ -164,6 +358,7 @@ impl<'res> ItemDef<'res> {
                     q
                 });
 
+                let ts = &mut os.root;
                 ts.extend(quote! {
                     #[repr(#repr)]
                     pub enum #ident {
@@ -171,7 +366,6 @@ impl<'res> ItemDef<'res> {
                     }
                 });
             }
-            Item::NotFound => unreachable!("uhh not found?"),
         }
 
         Ok(())
@@ -287,7 +481,7 @@ impl crate::resolver::QualType {
                 element.emit(ts);
 
                 ts.append(pm::Punct::new(';', pm::Spacing::Alone));
-                ts.append(pm::TokenTree::Literal(pm::Literal::u32_unsuffixed(*len)));
+                ts.append(pm::Literal::u32_unsuffixed(*len));
                 ts.append(pm::Punct::new(']', pm::Spacing::Joint));
             }
         }
@@ -554,16 +748,14 @@ fn locate_items<'m, 'res>(
     BindingFile::iter_module(modi).map_or(Vec::new(), |i| {
         i.map(|bi| {
             let mut items = Vec::new();
+            let name = bi.ident.to_string().into();
+
             match bi.kind {
                 BindItemKind::Function => {
-                    let name = bi.ident.to_string().into();
-                    let mut fi = get_function(res, &name, None);
-                    items.append(&mut fi);
+                    items.append(&mut get_function(res, &name, None));
                 }
                 BindItemKind::FunctionPtr => {
-                    let name = bi.ident.to_string().into();
-                    let mut fi = get_func_ptr(res, &name, None);
-                    items.append(&mut fi);
+                    items.append(&mut get_func_ptr(res, &name, None));
 
                     // In some cases, the user may want to create function pointers for
                     // actual concrete functions for use with eg. GetProcAddress
@@ -579,11 +771,17 @@ fn locate_items<'m, 'res>(
                         items.append(&mut fi);
                     }
                 }
-                BindItemKind::Struct | BindItemKind::Union => {}
+                BindItemKind::Struct | BindItemKind::Union => {
+                    items.append(&mut get_record(res, &name, None));
+                }
                 BindItemKind::Constant => {
-                    let name = bi.ident.to_string().into();
-                    let mut fi = get_constant(res, &name, None);
-                    items.append(&mut fi);
+                    items.append(&mut get_constant(res, &name, None));
+                }
+                BindItemKind::Typedef => {
+                    items.append(&mut get_typedef(res, &name, None));
+                }
+                BindItemKind::Enum => {
+                    items.append(&mut get_enum(res, &name, None));
                 }
             }
 
@@ -593,30 +791,103 @@ fn locate_items<'m, 'res>(
     })
 }
 
-fn emit_item(def: &ItemDef<'_>, ts: &mut TokenStream, emitted: &mut UstrSet) -> anyhow::Result<()> {
-    // if !emitted.insert(def.ident) {
-    //     return Ok(());
-    // }
+#[derive(Debug)]
+struct Emitted {
+    namespace: Option<Ustr>,
+    kind: BindItemKind,
+    attrs: Attrs,
+}
 
-    for dep in &def.dependencies {
-        emit_item(dep, ts, emitted)?;
+#[inline]
+fn insert(emitted: &mut UstrMap<Vec<Emitted>>, item: &ItemDef<'_>) -> bool {
+    let (kind, attrs) = item.item.id();
+
+    let Some(pi) = emitted.get_mut(&item.ident) else {
+        emitted.insert(item.ident, vec![Emitted {
+            namespace: item.namespace,
+            kind,
+            attrs,
+        }]);
+        return true;
+    };
+
+    if let Some(ind) = pi.iter().position(|e| {
+        e.namespace == item.namespace && e.kind == kind
+    }) {
+        let existing = &mut pi[ind];
+        if attrs.is_empty() && existing.attrs.is_empty() || attrs.intersects(existing.attrs) {
+            return false;
+        } else {
+            existing.attrs |= attrs;
+            return true;
+        }
     }
 
-    def.emit(ts)?;
+    pi.push(Emitted {
+        namespace: item.namespace,
+        kind,
+        attrs,
+    });
+    true
+}
+
+#[inline]
+fn emit_item(
+    def: &ItemDef<'_>,
+    os: &mut OutputStream,
+    emitted: &mut UstrMap<Vec<Emitted>>,
+) -> anyhow::Result<()> {
+    if !insert(emitted, def) {
+        return Ok(());
+    }
+
+    for dep in &def.dependencies {
+        emit_item(dep, os, emitted)?;
+    }
+
+    def.emit(os)?;
     Ok(())
 }
 
 pub fn generate(res: &Resolver, modi: &syn::ItemMod) -> anyhow::Result<TokenStream> {
     let items = locate_items(res, modi);
 
-    let mut ts = TokenStream::new();
-    let mut emitted = UstrSet::default();
+    dbg!(&items);
+
+    let mut os = OutputStream::new();
+
+    let mut emitted = UstrMap::default();
 
     for (bi, defs) in items {
         for def in defs {
-            emit_item(&def, &mut ts, &mut emitted)?;
+            emit_item(&def, &mut os, &mut emitted)?;
         }
     }
 
-    Ok(ts)
+    Ok(os.finalize())
 }
+
+// pub fn format() {
+//     pub fn format(namespace: &str, tokens: &mut String) {
+//         let mut child = std::process::Command::new("rustfmt")
+//             .stdin(std::process::Stdio::piped())
+//             .stdout(std::process::Stdio::piped())
+//             .stderr(std::process::Stdio::null())
+//             .spawn()
+//             .expect("Failed to spawn `rustfmt`");
+//         let mut stdin = child.stdin.take().expect("Failed to open stdin");
+//         stdin.write_all(tokens.as_bytes()).unwrap();
+//         drop(stdin);
+//         let output = child.wait_with_output().unwrap();
+
+//         if output.status.success() {
+//             *tokens = String::from_utf8(output.stdout).expect("Failed to parse UTF-8");
+//         } else {
+//             println!(
+//                 "rustfmt failed for `{namespace}` with status {}\nError:\n{}",
+//                 output.status,
+//                 String::from_utf8_lossy(&output.stderr)
+//             );
+//         }
+//     }
+// }

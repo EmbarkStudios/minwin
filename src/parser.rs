@@ -4,13 +4,16 @@ use syn::{Ident, Item, ItemMod};
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 pub enum BindItemKind {
+    Enum,
     Constant,
     Struct,
     Union,
     Function,
     FunctionPtr,
+    Typedef,
 }
 
+#[derive(Debug)]
 pub struct BindItem<'pi> {
     pub module: &'pi ItemMod,
     pub kind: BindItemKind,
@@ -37,12 +40,17 @@ impl BindingFile {
     pub fn iter_module(modi: &ItemMod) -> Option<impl Iterator<Item = BindItem<'_>>> {
         Some(modi.content.as_ref()?.1.iter().filter_map(|item| {
             let (kind, ident) = match item {
+                Item::Enum(enm) => (BindItemKind::Enum, &enm.ident),
                 Item::Const(cnst) => (BindItemKind::Constant, &cnst.ident),
                 Item::Fn(func) => (BindItemKind::Function, &func.sig.ident),
                 Item::Struct(stru) => (BindItemKind::Struct, &stru.ident),
                 Item::Union(un) => (BindItemKind::Union, &un.ident),
-                Item::Type(ty) if matches!(*ty.ty, syn::Type::BareFn(_)) => {
-                    (BindItemKind::FunctionPtr, &ty.ident)
+                Item::Type(ty) => {
+                    if matches!(*ty.ty, syn::Type::BareFn(_)) {
+                        (BindItemKind::FunctionPtr, &ty.ident)
+                    } else {
+                        (BindItemKind::Typedef, &ty.ident)
+                    }
                 }
                 _ => return None,
             };

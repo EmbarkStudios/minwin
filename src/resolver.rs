@@ -7,7 +7,7 @@ use windows_metadata::{
     FieldAttributes, PInvokeAttributes, TypeAttributes,
 };
 
-#[derive(serde::Deserialize, Debug, Clone)]
+#[derive(serde::Deserialize, Debug, Clone, Copy)]
 pub struct ArchLayout {
     #[serde(default)]
     pub a: u8,
@@ -15,29 +15,42 @@ pub struct ArchLayout {
 }
 
 #[derive(serde::Deserialize, Debug, Clone, Default)]
-pub struct Layouts(Vec<ArchLayout>);
+pub struct ArchLayouts(Vec<ArchLayout>);
 
-impl Layouts {
+impl ArchLayouts {
     #[inline]
-    pub fn get_layout(&self, arch: u8) -> Option<Layout> {
-        self.0.iter().find_map(|al| {
-            if al.a == 0 {
-                Some(al.l)
-            } else if arch & al.a != 0 {
-                Some(al.l)
+    pub fn get_layout(&self, name: &str, attrs: Attrs) -> RecordLayout {
+        let arches = attrs.intersection(Attrs::ARCH).bits();
+
+        if arches == 0 || self.0[0].a == 0 {
+            RecordLayout::Agnostic(self.0[0].l)
+        } else {
+            let count = self.0.iter().filter(|al| al.a & arches != 0).count();
+
+            if count > 1 {
+                RecordLayout::Arch(
+                    self.0
+                        .iter()
+                        .filter_map(|al| (al.a & arches != 0).then_some(*al))
+                        .collect(),
+                )
             } else {
-                None
+                if let Some(l) = self
+                    .0
+                    .iter()
+                    .filter_map(|al| (al.a & arches != 0).then_some(al.l))
+                    .next()
+                {
+                    RecordLayout::Agnostic(l)
+                } else {
+                    RecordLayout::None
+                }
             }
-        })
-    }
-
-    #[inline]
-    fn iter(&self) -> impl Iterator<Item = ArchLayout> + '_ {
-        self.0.iter().cloned()
+        }
     }
 }
 
-impl From<Vec<ArchLayout>> for Layouts {
+impl From<Vec<ArchLayout>> for ArchLayouts {
     fn from(v: Vec<ArchLayout>) -> Self {
         Self(v)
     }
@@ -45,7 +58,7 @@ impl From<Vec<ArchLayout>> for Layouts {
 
 pub struct MetadataFiles {
     files: Vec<File>,
-    layouts: UstrMap<Layouts>,
+    layouts: UstrMap<ArchLayouts>,
 }
 
 impl MetadataFiles {
@@ -68,7 +81,7 @@ impl MetadataFiles {
             || -> anyhow::Result<_> {
                 let compressed = std::fs::read("/home/jake/code/minwin/md/layouts.json.zstd")?;
                 let decompressed = zstd::decode_all(std::io::Cursor::new(compressed))?;
-                let layouts: UstrMap<Layouts> = serde_json::from_slice(&decompressed)?;
+                let layouts: UstrMap<ArchLayouts> = serde_json::from_slice(&decompressed)?;
                 Ok(layouts)
             },
         );
@@ -199,7 +212,7 @@ pub enum Layout {
 
 bitflags::bitflags! {
     #[derive(Debug, Copy, Clone)]
-    pub struct RecAttrs: u8 {
+    pub struct Attrs: u8 {
         const X86 = 1 << 0;
         const X86_64 = 1 << 1;
         const AARCH64 = 1 << 2;
@@ -208,15 +221,22 @@ bitflags::bitflags! {
         const UNION = 1 << 4;
         const DEPRECATED = 1 << 5;
 
-        const ARCH = RecAttrs::X86.bits() | RecAttrs::X86_64.bits() | RecAttrs::AARCH64.bits();
+        const ARCH = Attrs::X86.bits() | Attrs::X86_64.bits() | Attrs::AARCH64.bits();
     }
+}
+
+#[derive(Debug)]
+pub enum RecordLayout {
+    None,
+    Agnostic(Layout),
+    Arch(Vec<ArchLayout>),
 }
 
 #[derive(Debug)]
 pub struct Record {
     pub fields: Vec<Item>,
-    pub layouts: Layouts,
-    pub attrs: RecAttrs,
+    pub layout: RecordLayout,
+    pub attrs: Attrs,
     pub nested: Vec<Record>,
 }
 
@@ -225,6 +245,7 @@ pub struct Func {
     pub params: Vec<Item>,
     pub ret: Option<QualType>,
     pub module: Option<Ustr>,
+    pub attrs: Attrs,
     pub is_system: bool,
 }
 
@@ -486,7 +507,7 @@ impl Resolver {
     fn get_items(
         reader: &Reader<'_>,
         tree: &reader::Tree<'_>,
-        layouts: &UstrMap<Layouts>,
+        layouts: &UstrMap<ArchLayouts>,
     ) -> anyhow::Result<TreeItems> {
         use reader::TypeKind;
 
@@ -616,7 +637,6 @@ impl Resolver {
     }
 
     fn get_func(reader: &Reader<'_>, def: reader::MethodDef) -> anyhow::Result<Option<Func>> {
-        let name = reader.method_def_name(def);
         let sig = reader.method_def_signature(def, &[]);
 
         let ret = if let Some(return_type) = sig.return_type {
@@ -670,9 +690,12 @@ impl Resolver {
             params.push(Item { name: pname, kind });
         }
 
+        let attrs = Self::get_attrs(reader, reader.method_def_attributes(sig.def));
+
         Ok(Some(Func {
             params,
             ret,
+            attrs,
             module: Some(module),
             is_system,
         }))
@@ -707,9 +730,12 @@ impl Resolver {
             params.push(Item { name: pname, kind });
         }
 
+        let attrs = Self::get_attrs(reader, reader.method_def_attributes(sig.def));
+
         Ok(Some(Func {
             params,
             ret,
+            attrs,
             module: None,
             is_system: true,
         }))
@@ -718,7 +744,7 @@ impl Resolver {
     fn get_record(
         reader: &Reader<'_>,
         def: reader::TypeDef,
-        clang_layouts: &UstrMap<Layouts>,
+        clang_layouts: &UstrMap<ArchLayouts>,
         parent: Option<reader::TypeDef>,
     ) -> anyhow::Result<Option<Record>> {
         // Check if this is actually only used as an opaque pointer
@@ -732,8 +758,8 @@ impl Resolver {
                         len: 0,
                     },
                 }],
-                layouts: Layouts::default(),
-                attrs: RecAttrs::empty(),
+                layout: RecordLayout::None,
+                attrs: Attrs::empty(),
                 nested: Vec::new(),
             }));
         }
@@ -760,35 +786,19 @@ impl Resolver {
 
         let flags = reader.type_def_flags(def);
 
-        let mut attrs = RecAttrs::empty();
+        let attrs = {
+            let mut attrs = Self::get_attrs(reader, reader.type_def_attributes(def));
 
-        if flags.contains(TypeAttributes::EXPLICIT_LAYOUT) {
-            attrs.insert(RecAttrs::UNION);
-        }
-
-        for attr in reader.type_def_attributes(def) {
-            match reader.attribute_name(attr) {
-                "SupportedArchitectureAttribute" => {
-                    if let Some((_, reader::Value::Enum(_, reader::Integer::I32(value)))) =
-                        reader.attribute_args(attr).get(0)
-                    {
-                        if value & 1 != 0 {
-                            attrs.insert(RecAttrs::X86);
-                        }
-                        if value & 2 != 0 {
-                            attrs.insert(RecAttrs::X86_64);
-                        }
-                        if value & 4 != 0 {
-                            attrs.insert(RecAttrs::AARCH64);
-                        }
-                    }
-                }
-                "DeprecatedAttribute" => {
-                    attrs.insert(RecAttrs::DEPRECATED);
-                }
-                _ => {}
+            if flags.contains(TypeAttributes::EXPLICIT_LAYOUT) {
+                attrs.insert(Attrs::UNION);
             }
-        }
+
+            if let Some(parent) = parent {
+                attrs.insert(Self::get_attrs(reader, reader.type_def_attributes(parent)).intersection(Attrs::ARCH));
+            }
+
+            attrs
+        };
 
         let name = reader.type_def_name(def).into();
 
@@ -806,33 +816,48 @@ impl Resolver {
             clang_layouts.get(&name)
         };
 
-        let layouts = if let Some(cl) = reader.type_def_class_layout(def) {
+        let layout = if let Some(cl) = reader.type_def_class_layout(def) {
             let md_packing = reader.class_layout_packing_size(cl) as u8;
 
-            // We only gather types via clang that are reachable from windows.h, so
-            // we just accept what the metadata says in the cases we don't collect for now
             if let Some(layouts) = clang_layout {
-                for layout in layouts.iter() {
-                    match layout.l {
+                let layout = layouts.get_layout(name.as_str(), attrs);
+
+                match &layout {
+                    RecordLayout::None => {
+                        unreachable!("uhoh");
+                    }
+                    RecordLayout::Agnostic(al) => match al {
                         Layout::Align(a) => {
                             anyhow::bail!("windows metadata for {name} has a packing of {md_packing}, but we detected it was aligned by {a} via clang");
                         }
                         Layout::Packed(cp) => {
-                            anyhow::ensure!(md_packing == cp, "windows metadata for {name} has packing of {md_packing} but we detected a packing of {cp} via clang");
+                            anyhow::ensure!(md_packing == *cp, "windows metadata for {name} has packing of {md_packing} but we detected a packing of {cp} via clang");
+                        }
+                    },
+                    RecordLayout::Arch(al) => {
+                        for layout in al {
+                            match layout.l {
+                                Layout::Align(a) => {
+                                    anyhow::bail!("windows metadata for {name} has a packing of {md_packing}, but we detected it was aligned by {a} via clang");
+                                }
+                                Layout::Packed(cp) => {
+                                    anyhow::ensure!(md_packing == cp, "windows metadata for {name} has packing of {md_packing} but we detected a packing of {cp} via clang");
+                                }
+                            }
                         }
                     }
                 }
 
-                layouts.clone()
+                layout
             } else {
-                vec![ArchLayout {
-                    a: attrs.intersection(RecAttrs::ARCH).bits(),
-                    l: Layout::Packed(md_packing),
-                }]
-                .into()
+                // We only gather types via clang that are reachable from windows.h, so
+                // we just accept what the metadata says in the cases we don't collect for now
+                RecordLayout::Agnostic(Layout::Packed(md_packing))
             }
+        } else if let Some(cl) = clang_layout {
+            cl.get_layout(name.as_str(), attrs)
         } else {
-            clang_layout.cloned().unwrap_or_default()
+            RecordLayout::None
         };
 
         let nested = {
@@ -850,7 +875,7 @@ impl Resolver {
 
         Ok(Some(Record {
             fields,
-            layouts,
+            layout,
             attrs,
             nested,
         }))
@@ -911,59 +936,38 @@ impl Resolver {
             needs_conversion,
             kind,
         }))
+    }
 
-        // if ty == constant_type {
-        //     if ty == Type::String {
-        //         let crate_name = gen.crate_name();
-        //         if gen.reader.field_is_ansi(def) {
-        //             let value = gen.value(&reader.constant_value(constant));
-        //             quote! {
-        //                 #doc
-        //                 #features
-        //                 pub const #name: ::#crate_name::core::PCSTR = ::#crate_name::s!(#value);
-        //             }
-        //         } else {
-        //             let value = gen.value(&gen.reader.constant_value(constant));
-        //             quote! {
-        //                 #doc
-        //                 #features
-        //                 pub const #name: ::#crate_name::core::PCWSTR = ::#crate_name::w!(#value);
-        //             }
-        //         }
-        //     } else {
-        //         let value = gen.typed_value(&gen.reader.constant_value(constant));
-        //         quote! {
-        //             #doc
-        //             #features
-        //             pub const #name: #value;
-        //         }
-        //     }
-        // } else {
-        //     let kind = gen.type_default_name(&ty);
-        //     let value = gen.value(&gen.reader.constant_value(constant));
+    fn get_attrs(
+        reader: &Reader<'_>,
+        attributes: impl Iterator<Item = reader::Attribute>,
+    ) -> Attrs {
+        let mut attrs = Attrs::empty();
 
-        //     let value = if gen.reader.type_underlying_type(&ty) == constant_type {
-        //         value
-        //     // TODO: workaround for https://github.com/microsoft/win32metadata/issues/1029
-        //     } else if ty == Type::PCWSTR && value.0.starts_with('-') {
-        //         quote! { #value as u16 as _ }
-        //     } else {
-        //         quote! { #value as _ }
-        //     };
+        for attr in attributes {
+            match reader.attribute_name(attr) {
+                "SupportedArchitectureAttribute" => {
+                    if let Some((_, reader::Value::Enum(_, reader::Integer::I32(value)))) =
+                        reader.attribute_args(attr).get(0)
+                    {
+                        if value & 1 != 0 {
+                            attrs.insert(Attrs::X86);
+                        }
+                        if value & 2 != 0 {
+                            attrs.insert(Attrs::X86_64);
+                        }
+                        if value & 4 != 0 {
+                            attrs.insert(Attrs::AARCH64);
+                        }
+                    }
+                }
+                "DeprecatedAttribute" => {
+                    attrs.insert(Attrs::DEPRECATED);
+                }
+                _ => {}
+            }
+        }
 
-        //     if !gen.sys && gen.reader.type_has_replacement(&ty) {
-        //         quote! {
-        //             #doc
-        //             #features
-        //             pub const #name: #kind = #kind(#value);
-        //         }
-        //     } else {
-        //         quote! {
-        //             #doc
-        //             #features
-        //             pub const #name: #kind = #value;
-        //         }
-        //     }
-        // }
+        attrs
     }
 }
