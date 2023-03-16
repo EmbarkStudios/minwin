@@ -74,6 +74,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "baf1de4339761588bc0619e3cbc0120ee582ebb74b53b4efbf79117bd2da40fd"
 
 [[package]]
+name = "clang-ast"
+version = "0.1.16"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f01a8823bc658ffd6c6cc1931b0283e7daacf2299fe79faab307cc08c65c98fe"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "crossbeam-channel"
 version = "0.5.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -805,6 +814,7 @@ name = "update"
 version = "0.1.0"
 dependencies = [
  "cargo_metadata",
+ "clang-ast",
  "rayon",
  "reqwest",
  "serde",

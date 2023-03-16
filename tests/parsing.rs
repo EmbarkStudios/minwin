@@ -3,7 +3,7 @@ use std::fmt::Write;
 #[test]
 fn parses_simple() {
     let mut parser = minwin::Parser::default();
-    parser.add_file("tests/data/input.rs");
+    parser.add_file("tests/data/parking_lot.rs");
 
     let parsed = parser.parse();
 

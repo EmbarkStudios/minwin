@@ -43,6 +43,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a"
 
 [[package]]
+name = "bitflags"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f4f6e5df9abedba5099a01a6567c6086a6fbcff57af07c360d356737f9e0c644"
+
+[[package]]
 name = "byteorder"
 version = "1.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -102,7 +108,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "335867764ed2de42325fafe6d18b8af74ba97ee0c590fa016f157535b42ab04b"
 dependencies = [
  "atty",
- "bitflags",
+ "bitflags 1.3.2",
  "clap_derive",
  "clap_lex",
  "once_cell",
@@ -313,13 +319,16 @@ name = "minwin"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "bitflags",
+ "bitflags 2.0.0",
  "camino",
  "cargo_metadata",
  "clap",
  "insta",
  "proc-macro2",
+ "quote",
  "rayon",
+ "serde",
+ "serde_json",
  "syn",
  "tracing",
  "tracing-subscriber",
@@ -460,7 +469,7 @@ version = "0.2.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fb5a58c1855b4b6819d59012155603f0b22ad30cad752600aadfcb695265519a"
 dependencies = [
- "bitflags",
+ "bitflags 1.3.2",
 ]
 
 [[package]]
@@ -693,6 +702,7 @@ dependencies = [
  "byteorder",
  "lazy_static",
  "parking_lot",
+ "serde",
 ]
 
 [[package]]
@@ -746,9 +756,9 @@ checksum = "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f"
 
 [[package]]
 name = "windows-bindgen"
-version = "0.44.0"
+version = "0.46.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "222204ecf46521382a4d88b4a1bbefca9f8855697b4ab7d20803901425e061a3"
+checksum = "0d5dc56e9e48bf91f0fc129ad4b55ce88d5e8fa79772b5ae8e2855c7176ebf02"
 dependencies = [
  "windows-metadata",
  "windows-tokens",
@@ -756,9 +766,9 @@ dependencies = [
 
 [[package]]
 name = "windows-metadata"
-version = "0.44.0"
+version = "0.46.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ee78911e3f4ce32c1ad9d3c7b0bd95389662ad8d8f1a3155688fed70bd96e2b6"
+checksum = "0a0a23645693114cf800e6b6a15c02057b2cd0db54813ad0f3df65c4a5519b27"
 
 [[package]]
 name = "windows-sys"
@@ -777,9 +787,9 @@ dependencies = [
 
 [[package]]
 name = "windows-tokens"
-version = "0.44.0"
+version = "0.46.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fa4251900975a0d10841c5d4bde79c56681543367ef811f3fabb8d1803b0959b"
+checksum = "cd3f9b39619c4717d2eb549e9066c329d432e8b6dca85a0d222649dd667fd3d0"
 
 [[package]]
 name = "windows_aarch64_gnullvm"

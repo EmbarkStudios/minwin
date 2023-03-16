@@ -2,29 +2,80 @@ use anyhow::Context as _;
 use rayon::prelude::*;
 use std::collections::BTreeMap;
 use ustr::{Ustr, UstrMap};
-use windows_metadata::reader::{self, File, Reader};
+use windows_metadata::{
+    reader::{self, File, Reader},
+    FieldAttributes, PInvokeAttributes, TypeAttributes,
+};
+
+#[derive(serde::Deserialize, Debug, Clone)]
+pub struct ArchLayout {
+    #[serde(default)]
+    pub a: u8,
+    pub l: Layout,
+}
+
+#[derive(serde::Deserialize, Debug, Clone, Default)]
+pub struct Layouts(Vec<ArchLayout>);
+
+impl Layouts {
+    #[inline]
+    pub fn get_layout(&self, arch: u8) -> Option<Layout> {
+        self.0.iter().find_map(|al| {
+            if al.a == 0 {
+                Some(al.l)
+            } else if arch & al.a != 0 {
+                Some(al.l)
+            } else {
+                None
+            }
+        })
+    }
+
+    #[inline]
+    fn iter(&self) -> impl Iterator<Item = ArchLayout> + '_ {
+        self.0.iter().cloned()
+    }
+}
+
+impl From<Vec<ArchLayout>> for Layouts {
+    fn from(v: Vec<ArchLayout>) -> Self {
+        Self(v)
+    }
+}
 
 pub struct MetadataFiles {
     files: Vec<File>,
+    layouts: UstrMap<Layouts>,
 }
 
 impl MetadataFiles {
     pub fn new() -> anyhow::Result<Self> {
         let mds = ["Windows", "Windows.Win32", "Windows.Win32.Interop"];
 
-        let mut files = Vec::new();
-
-        mds.into_par_iter()
-            .map(|p| -> anyhow::Result<File> {
-                let compressed =
-                    std::fs::read(format!("/home/jake/code/minwin/md/{p}.winmd.zstd"))?;
+        let (md_files, layouts) = rayon::join(
+            || {
+                let mut files = Vec::new();
+                mds.into_par_iter()
+                    .map(|p| -> anyhow::Result<File> {
+                        let compressed =
+                            std::fs::read(format!("/home/jake/code/minwin/md/{p}.winmd.zstd"))?;
+                        let decompressed = zstd::decode_all(std::io::Cursor::new(compressed))?;
+                        Ok(File::from_buffer(decompressed)?)
+                    })
+                    .collect_into_vec(&mut files);
+                files
+            },
+            || -> anyhow::Result<_> {
+                let compressed = std::fs::read("/home/jake/code/minwin/md/layouts.json.zstd")?;
                 let decompressed = zstd::decode_all(std::io::Cursor::new(compressed))?;
-                Ok(File::from_buffer(decompressed, format!("{p}.winmd"))?)
-            })
-            .collect_into_vec(&mut files);
+                let layouts: UstrMap<Layouts> = serde_json::from_slice(&decompressed)?;
+                Ok(layouts)
+            },
+        );
 
         Ok(Self {
-            files: files.into_iter().collect::<anyhow::Result<Vec<_>>>()?,
+            files: md_files.into_iter().collect::<anyhow::Result<Vec<_>>>()?,
+            layouts: layouts?,
         })
     }
 }
@@ -54,6 +105,24 @@ pub enum Builtin {
     Pcstr,
     Pcwstr,
     Bstr,
+}
+
+impl Builtin {
+    pub fn as_repr(self) -> anyhow::Result<&'static str> {
+        let rep = match self {
+            Self::Char => "i8",
+            Self::UChar => "u8",
+            Self::Short => "i16",
+            Self::UShort => "u16",
+            Self::Int => "i32",
+            Self::UInt => "u32",
+            Self::Long => "i64",
+            Self::ULong => "u64",
+            _ => anyhow::bail!("{self:?} is an invalid enum representation"),
+        };
+
+        Ok(rep)
+    }
 }
 
 impl TryFrom<reader::Type> for Builtin {
@@ -96,10 +165,6 @@ pub enum QualType {
         is_const: bool,
         pointee: Box<QualType>,
     },
-    // Reference {
-    //     is_const: bool,
-    //     pointee: Box<QualType<'ast>>,
-    // },
     Builtin(Builtin),
     FunctionPointer {
         name: Ustr,
@@ -110,19 +175,13 @@ pub enum QualType {
     },
     Enum {
         name: Ustr,
-        //cxx_qt: &'ast str,
-        //repr: Builtin,
     },
-    // Flags {
-    //     name: &'ast str,
-    //     repr: Builtin,
-    // },
     Record {
         name: Ustr,
     },
-    // TemplateTypedef {
-    //     name: String,
-    // },
+    Typedef {
+        name: Ustr,
+    },
 }
 
 #[derive(Debug)]
@@ -131,14 +190,16 @@ pub struct Item {
     pub kind: QualType,
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, serde::Deserialize)]
+#[serde(tag = "l", content = "s")]
 pub enum Layout {
-    Packed(u32),
-    Align(u32),
+    Packed(u8),
+    Align(u8),
 }
 
 bitflags::bitflags! {
-    pub struct RecAttrs: u32 {
+    #[derive(Debug, Copy, Clone)]
+    pub struct RecAttrs: u8 {
         const X86 = 1 << 0;
         const X86_64 = 1 << 1;
         const AARCH64 = 1 << 2;
@@ -146,13 +207,15 @@ bitflags::bitflags! {
         const COPY_CLONE = 1 << 3;
         const UNION = 1 << 4;
         const DEPRECATED = 1 << 5;
+
+        const ARCH = RecAttrs::X86.bits() | RecAttrs::X86_64.bits() | RecAttrs::AARCH64.bits();
     }
 }
 
 #[derive(Debug)]
 pub struct Record {
     pub fields: Vec<Item>,
-    pub layout: Option<Layout>,
+    pub layouts: Layouts,
     pub attrs: RecAttrs,
     pub nested: Vec<Record>,
 }
@@ -165,11 +228,17 @@ pub struct Func {
     pub is_system: bool,
 }
 
-pub struct Value(pub reader::Value);
+pub struct Value {
+    pub val: reader::Value,
+    pub is_wide_str: bool,
+}
 
 impl From<reader::Value> for Value {
-    fn from(v: reader::Value) -> Self {
-        Self(v)
+    fn from(val: reader::Value) -> Self {
+        Self {
+            val,
+            is_wide_str: false,
+        }
     }
 }
 
@@ -178,7 +247,7 @@ use std::fmt;
 impl fmt::Debug for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use reader::Value;
-        match &self.0 {
+        match &self.val {
             Value::Bool(v) => write!(f, "{v}: bool"),
             Value::I8(v) => write!(f, "{v}: i8"),
             Value::U8(v) => write!(f, "{v}: u8"),
@@ -191,6 +260,19 @@ impl fmt::Debug for Value {
             Value::F32(v) => write!(f, "{v}: f32"),
             Value::F64(v) => write!(f, "{v}: f64"),
             Value::String(s) => f.write_str(s),
+            Value::Enum(td, v) => {
+                use windows_metadata::reader::Integer;
+                match v {
+                    Integer::I8(v) => write!(f, "{v}: enum i8"),
+                    Integer::U8(v) => write!(f, "{v}: enum u8"),
+                    Integer::I16(v) => write!(f, "{v}: enum i16"),
+                    Integer::U16(v) => write!(f, "{v}: enum u16"),
+                    Integer::I32(v) => write!(f, "{v}: enum i32"),
+                    Integer::U32(v) => write!(f, "{v}: enum u32"),
+                    Integer::I64(v) => write!(f, "{v}: enum i64"),
+                    Integer::U64(v) => write!(f, "{v}: enum u64"),
+                }
+            }
             Value::TypeDef(_td) => unreachable!("uhm...typedef"),
         }
     }
@@ -226,6 +308,7 @@ pub struct TreeItems {
     pub records: UstrMap<Vec<Record>>,
     pub enums: UstrMap<Enum>,
     pub function_pointers: UstrMap<Vec<Func>>,
+    pub typedefs: UstrMap<Vec<QualType>>,
 }
 
 impl Resolver {
@@ -276,7 +359,10 @@ impl Resolver {
 
         let namespaces = trees
             .par_iter()
-            .map(|tree| Self::get_items(&reader, tree).map(|ti| (Ustr::from(tree.namespace), ti)))
+            .map(|tree| {
+                Self::get_items(&reader, tree, &md.layouts)
+                    .map(|ti| (Ustr::from(tree.namespace), ti))
+            })
             .try_fold(
                 || Vec::with_capacity(trees.len()),
                 |mut v, t| -> anyhow::Result<_> {
@@ -335,23 +421,47 @@ impl Resolver {
                         len: len as u32,
                     }
                 } else {
-                    tracing::debug!("array element was not valid");
+                    tracing::error!("array element was not valid");
                     return Ok(None);
                 }
             }
             Type::TypeDef((td, _)) => {
-                let type_name = reader.type_def_type_name(td);
-                let kind = reader.type_def_kind(td);
+                // A few structs/unions have anonymous nested records inside them, this is a bit
+                // ugly since we need to mirror the naming when we actually emit the Rust definition
+                fn scoped_name(reader: &Reader<'_>, td: reader::TypeDef) -> Ustr {
+                    let name = reader.type_def_name(td);
+                    if let Some(enclosing_type) = reader.type_def_enclosing_type(td) {
+                        for (index, nested_type) in reader.nested_types(enclosing_type).enumerate()
+                        {
+                            if reader.type_def_name(nested_type) == name {
+                                return format!("{}_{index}", scoped_name(reader, enclosing_type))
+                                    .into();
+                            }
+                        }
+                    }
 
-                let name = type_name.name.into();
+                    name.into()
+                }
+
+                let name = scoped_name(reader, td);
+                let kind = reader.type_def_kind(td);
 
                 use reader::TypeKind;
                 match kind {
-                    TypeKind::Struct => QualType::Record { name },
+                    TypeKind::Struct => {
+                        if reader
+                            .type_def_attributes(td)
+                            .any(|tda| reader.attribute_name(tda) == "NativeTypedefAttribute")
+                        {
+                            QualType::Typedef { name }
+                        } else {
+                            QualType::Record { name }
+                        }
+                    }
                     TypeKind::Delegate => QualType::FunctionPointer { name },
                     TypeKind::Enum => QualType::Enum { name },
                     invalid => {
-                        tracing::debug!("encountered typedef '{type_name}' which is the invalid type kind '{invalid:?}'");
+                        tracing::error!("encountered typedef '{name}' which is the invalid type kind '{invalid:?}'");
                         return Ok(None);
                     }
                 }
@@ -373,7 +483,11 @@ impl Resolver {
         Ok(Some(qt))
     }
 
-    fn get_items(reader: &Reader<'_>, tree: &reader::Tree<'_>) -> anyhow::Result<TreeItems> {
+    fn get_items(
+        reader: &Reader<'_>,
+        tree: &reader::Tree<'_>,
+        layouts: &UstrMap<Layouts>,
+    ) -> anyhow::Result<TreeItems> {
         use reader::TypeKind;
 
         let mut constants = UstrMap::default();
@@ -381,6 +495,7 @@ impl Resolver {
         let mut records = UstrMap::default();
         let mut enums = UstrMap::default();
         let mut function_pointers = UstrMap::default();
+        let mut typedefs = UstrMap::default();
 
         for def in reader.namespace_types(tree.namespace) {
             let type_name = reader.type_def_type_name(def);
@@ -398,7 +513,7 @@ impl Resolver {
                 // function signatures and constants
                 TypeKind::Class => {
                     // ...except WinRT has actual classes, but we don't care about WinRT
-                    if reader.type_def_flags(def).winrt() {
+                    if reader.type_def_flags(def).contains(TypeAttributes::WINRT) {
                         continue;
                     }
 
@@ -452,11 +567,17 @@ impl Resolver {
                         .type_def_attributes(def)
                         .any(|tda| reader.attribute_name(tda) == "NativeTypedefAttribute")
                     {
-                        tracing::debug!("encountered handle '{name}'");
+                        typedefs
+                            .entry(name)
+                            .or_insert(Vec::new())
+                            .extend(Self::resolve_type(
+                                reader,
+                                reader.type_def_underlying_type(def),
+                            )?);
                         continue;
                     }
 
-                    let Some(record) = Self::get_record(reader, def)
+                    let Some(record) = Self::get_record(reader, def, layouts, None)
                         .with_context(|| format!("failed to resolve record '{name}'"))? else { continue; };
 
                     records.entry(name).or_insert(Vec::new()).push(record);
@@ -490,6 +611,7 @@ impl Resolver {
             records,
             enums,
             function_pointers,
+            typedefs,
         })
     }
 
@@ -518,9 +640,9 @@ impl Resolver {
         let is_system = {
             let inv_attrs = reader.impl_map_flags(impl_map);
 
-            if inv_attrs.conv_platform() {
+            if inv_attrs.contains(PInvokeAttributes::CONV_PLATFORM) {
                 true
-            } else if inv_attrs.conv_cdecl() {
+            } else if inv_attrs.contains(PInvokeAttributes::CONV_CDECL) {
                 false
             } else {
                 anyhow::bail!("function has invalid invoke attributes {:08x}", inv_attrs.0);
@@ -529,7 +651,11 @@ impl Resolver {
 
         let module = {
             let scope = reader.impl_map_scope(impl_map);
-            reader.module_ref_name(scope).into()
+            // lowercase the name, we want to emit library names that will work
+            // on case sensitive file systems (though the windows sdk has screwed up
+            // names for many libraries with mixed case...)
+            let dname = reader.module_ref_name(scope).to_lowercase();
+            dname.strip_suffix(".dll").unwrap_or(&dname).into()
         };
 
         let mut params = Vec::new();
@@ -554,7 +680,7 @@ impl Resolver {
 
     fn get_func_ptr(reader: &Reader<'_>, def: reader::TypeDef) -> anyhow::Result<Option<Func>> {
         let method = reader.type_def_invoke_method(def);
-        let name = reader.method_def_name(method);
+
         let sig = reader.method_def_signature(method, &[]);
 
         let ret = if let Some(return_type) = sig.return_type {
@@ -589,9 +715,12 @@ impl Resolver {
         }))
     }
 
-    fn get_record(reader: &Reader<'_>, def: reader::TypeDef) -> anyhow::Result<Option<Record>> {
-        let name = reader.type_def_name(def);
-
+    fn get_record(
+        reader: &Reader<'_>,
+        def: reader::TypeDef,
+        clang_layouts: &UstrMap<Layouts>,
+        parent: Option<reader::TypeDef>,
+    ) -> anyhow::Result<Option<Record>> {
         // Check if this is actually only used as an opaque pointer
         if reader.type_def_fields(def).next().is_none() {
             tracing::debug!("found opaque struct");
@@ -603,28 +732,16 @@ impl Resolver {
                         len: 0,
                     },
                 }],
-                layout: None,
+                layouts: Layouts::default(),
                 attrs: RecAttrs::empty(),
                 nested: Vec::new(),
             }));
         }
 
-        let layout = if let Some(layout) = reader.type_def_class_layout(def) {
-            Some(Layout::Packed(
-                reader.class_layout_packing_size(layout) as u32
-            ))
-        } else if let Some(alignment) = None
-        /* TODO: Generate list of records with alignment via clang++ */
-        {
-            Some(Layout::Align(alignment))
-        } else {
-            None
-        };
-
         let fields = {
             let mut fields = Vec::new();
             for field in reader.type_def_fields(def) {
-                if reader.field_flags(field).literal() {
+                if reader.field_flags(field).contains(FieldAttributes::LITERAL) {
                     continue;
                 }
 
@@ -645,14 +762,15 @@ impl Resolver {
 
         let mut attrs = RecAttrs::empty();
 
-        if flags.explicit_layout() {
+        if flags.contains(TypeAttributes::EXPLICIT_LAYOUT) {
             attrs.insert(RecAttrs::UNION);
         }
 
         for attr in reader.type_def_attributes(def) {
             match reader.attribute_name(attr) {
                 "SupportedArchitectureAttribute" => {
-                    if let Some((_, reader::Value::I32(value))) = reader.attribute_args(attr).get(0)
+                    if let Some((_, reader::Value::Enum(_, reader::Integer::I32(value)))) =
+                        reader.attribute_args(attr).get(0)
                     {
                         if value & 1 != 0 {
                             attrs.insert(RecAttrs::X86);
@@ -672,10 +790,55 @@ impl Resolver {
             }
         }
 
+        let name = reader.type_def_name(def).into();
+
+        // The windows metadata is missing vital layout information
+        // 1. Alignment isn't collected at all https://github.com/microsoft/win32metadata/issues/1044
+        // 2. While packing information is collected there are some that are missing! :p
+        let clang_layout = if let Some(parent) = parent {
+            // Alignment doesn't propagate to nested types, and AFAICT there are
+            // no explicit alignments done for nested types
+            let pname = reader.type_def_name(parent).into();
+            clang_layouts
+                .get(&pname)
+                .filter(|l| l.0.iter().all(|al| matches!(al.l, Layout::Packed(_))))
+        } else {
+            clang_layouts.get(&name)
+        };
+
+        let layouts = if let Some(cl) = reader.type_def_class_layout(def) {
+            let md_packing = reader.class_layout_packing_size(cl) as u8;
+
+            // We only gather types via clang that are reachable from windows.h, so
+            // we just accept what the metadata says in the cases we don't collect for now
+            if let Some(layouts) = clang_layout {
+                for layout in layouts.iter() {
+                    match layout.l {
+                        Layout::Align(a) => {
+                            anyhow::bail!("windows metadata for {name} has a packing of {md_packing}, but we detected it was aligned by {a} via clang");
+                        }
+                        Layout::Packed(cp) => {
+                            anyhow::ensure!(md_packing == cp, "windows metadata for {name} has packing of {md_packing} but we detected a packing of {cp} via clang");
+                        }
+                    }
+                }
+
+                layouts.clone()
+            } else {
+                vec![ArchLayout {
+                    a: attrs.intersection(RecAttrs::ARCH).bits(),
+                    l: Layout::Packed(md_packing),
+                }]
+                .into()
+            }
+        } else {
+            clang_layout.cloned().unwrap_or_default()
+        };
+
         let nested = {
             let mut nested = Vec::new();
             for (i, td) in reader.nested_types(def).enumerate() {
-                let Some(nest) = Self::get_record(reader, td)? else {
+                let Some(nest) = Self::get_record(reader, td, clang_layouts, parent.or(Some(def)))? else {
                     tracing::debug!("skipping due to nested record {i}");
                     return Ok(None);
                 };
@@ -687,7 +850,7 @@ impl Resolver {
 
         Ok(Some(Record {
             fields,
-            layout,
+            layouts,
             attrs,
             nested,
         }))
@@ -700,7 +863,7 @@ impl Resolver {
         let variants = reader
             .type_def_fields(def)
             .filter_map(|field| {
-                if reader.field_flags(field).literal() {
+                if reader.field_flags(field).contains(FieldAttributes::LITERAL) {
                     let name = reader.field_name(field).into();
                     let constant = reader.field_constant(field)?;
                     let value = reader.constant_value(constant);
@@ -725,10 +888,13 @@ impl Resolver {
         let kind = reader.constant_type(constant);
         let needs_conversion = kind != reader.field_type(def, None).to_const();
 
+        let mut is_wide_str = false;
+
         let kind = if kind == reader::Type::String {
             if reader.field_is_ansi(def) {
                 QualType::Builtin(Builtin::Pcstr)
             } else {
+                is_wide_str = true;
                 QualType::Builtin(Builtin::Pcwstr)
             }
         } else if let Some(kind) = Self::resolve_type(reader, kind)? {
@@ -737,10 +903,11 @@ impl Resolver {
             return Ok(None);
         };
 
-        let value = reader.constant_value(constant);
+        let mut value: Value = reader.constant_value(constant).into();
+        value.is_wide_str = is_wide_str;
 
         Ok(Some(Constant {
-            value: value.into(),
+            value,
             needs_conversion,
             kind,
         }))

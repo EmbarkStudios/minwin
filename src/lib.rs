@@ -3,5 +3,5 @@ mod parser;
 mod resolver;
 
 pub use generator::generate;
-pub use parser::Parser;
+pub use parser::{BindingFile, Parser};
 pub use resolver::{MetadataFiles, Resolver};
