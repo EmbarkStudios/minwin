@@ -2,6 +2,7 @@
 source: tests/generation.rs
 expression: generated
 ---
+#[minwin]
 mod enums {
     #[repr(u32)]
     pub enum WIN32_ERROR {

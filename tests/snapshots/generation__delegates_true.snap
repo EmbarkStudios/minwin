@@ -2,25 +2,26 @@
 source: tests/generation.rs
 expression: generated
 ---
+#[minwin]
 mod bindings {
     pub type BOOL = i32;
     pub type HANDLE = isize;
     #[repr(C)]
     pub struct OVERLAPPED_0_0 {
-        Offset: u32,
-        OffsetHigh: u32,
+        pub Offset: u32,
+        pub OffsetHigh: u32,
     }
     #[repr(C)]
     pub union OVERLAPPED_0 {
-        Anonymous: std::mem::ManuallyDrop<OVERLAPPED_0_0>,
-        Pointer: *mut std::ffi::c_void,
+        pub Anonymous: std::mem::ManuallyDrop<OVERLAPPED_0_0>,
+        pub Pointer: *mut std::ffi::c_void,
     }
     #[repr(C)]
     pub struct OVERLAPPED {
-        Internal: usize,
-        InternalHigh: usize,
-        Anonymous: OVERLAPPED_0,
-        hEvent: HANDLE,
+        pub Internal: usize,
+        pub InternalHigh: usize,
+        pub Anonymous: OVERLAPPED_0,
+        pub hEvent: HANDLE,
     }
     pub type LPOVERLAPPED_COMPLETION_ROUTINE = Option<
         unsafe extern "system" fn(

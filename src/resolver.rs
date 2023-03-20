@@ -442,7 +442,7 @@ impl Resolver {
                         len: len as u32,
                     }
                 } else {
-                    tracing::error!("array element was not valid");
+                    tracing::trace!("array element was not valid");
                     return Ok(None);
                 }
             }
@@ -482,7 +482,7 @@ impl Resolver {
                     TypeKind::Delegate => QualType::FunctionPointer { name },
                     TypeKind::Enum => QualType::Enum { name },
                     invalid => {
-                        tracing::error!("encountered typedef '{name}' which is the invalid type kind '{invalid:?}'");
+                        tracing::trace!("encountered typedef '{name}' which is the invalid type kind '{invalid:?}'");
                         return Ok(None);
                     }
                 }
@@ -495,7 +495,7 @@ impl Resolver {
             | Type::WinrtArray(_)
             | Type::WinrtArrayRef(_)
             | Type::WinrtConstRef(_) => {
-                tracing::debug!("type is not supported");
+                tracing::trace!("type is not supported");
                 return Ok(None);
             }
             other => QualType::Builtin(other.try_into()?),
@@ -641,7 +641,7 @@ impl Resolver {
 
         let ret = if let Some(return_type) = sig.return_type {
             let Some(ret) = Self::resolve_type(reader, return_type)? else {
-                tracing::debug!("skipping due to return type");
+                tracing::trace!("skipping due to return type");
                 return Ok(None)
             };
             Some(ret)
@@ -683,7 +683,7 @@ impl Resolver {
         for param in sig.params.into_iter() {
             let pname = reader.param_name(param.def).into();
             let Some(kind) = Self::resolve_type(reader, param.ty)? else {
-                tracing::debug!("skipping parameter '{pname}'");
+                tracing::trace!("skipping due to parameter '{pname}'");
                 return Ok(None);
             };
 
@@ -708,7 +708,7 @@ impl Resolver {
 
         let ret = if let Some(return_type) = sig.return_type {
             let Some(ret) = Self::resolve_type(reader, return_type)? else {
-                tracing::debug!("skipping due to return type");
+                tracing::trace!("skipping due to return type");
                 return Ok(None);
             };
             Some(ret)
@@ -723,7 +723,7 @@ impl Resolver {
         for param in sig.params.into_iter() {
             let pname = reader.param_name(param.def).into();
             let Some(kind) = Self::resolve_type(reader, param.ty)? else {
-                tracing::debug!("skipping due to parameter '{pname}'");
+                tracing::trace!("skipping due to parameter '{pname}'");
                 return Ok(None);
             };
 
@@ -749,7 +749,7 @@ impl Resolver {
     ) -> anyhow::Result<Option<Record>> {
         // Check if this is actually only used as an opaque pointer
         if reader.type_def_fields(def).next().is_none() {
-            tracing::debug!("found opaque struct");
+            tracing::trace!("found opaque struct");
             return Ok(Some(Record {
                 fields: vec![Item {
                     name: "_unused".into(),
@@ -775,7 +775,7 @@ impl Resolver {
                 let ty = reader.field_type(field, Some(def));
 
                 let Some(kind) = Self::resolve_type(reader, ty)? else {
-                    tracing::debug!("skipping due to field {fname}");
+                    tracing::trace!("skipping due to field {fname}");
                     return Ok(None);
                 };
 
@@ -869,7 +869,7 @@ impl Resolver {
             let mut nested = Vec::new();
             for (i, td) in reader.nested_types(def).enumerate() {
                 let Some(nest) = Self::get_record(reader, td, clang_layouts, parent.or(Some(def)))? else {
-                    tracing::debug!("skipping due to nested record {i}");
+                    tracing::trace!("skipping due to nested record {i}");
                     return Ok(None);
                 };
 

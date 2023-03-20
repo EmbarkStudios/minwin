@@ -1,4 +1,3 @@
-mod boop;
 mod generator;
 mod parser;
 mod resolver;

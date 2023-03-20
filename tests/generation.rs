@@ -20,6 +20,7 @@ fn generate(input: &str, format: bool) {
 
     let generated = parsed
         .iter_bind_modules()
+        .enumerate()
         .map(|(i, m)| {
             let ts = minwin::generate(&resolved, m).with_context(|| format!("{}", m.ident))?;
             Ok((i, ts))

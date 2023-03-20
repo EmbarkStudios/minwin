@@ -29,11 +29,13 @@ tracing = { version = "0.1", default-features = false, features = [
 ] }
 # Emission of logs to stdout
 tracing-subscriber = { version = "0.3", default-features = false, features = [
+    "ansi",
     "env-filter",
     "fmt",
     "json",
 ] }
 ustr = { version = "0.9", features = ["serialization"] }
+walkdir = "2.3"
 # When bumping versions, run `cargo run --manifest-path update/Cargo.toml` to
 # get the winmd files that match the publish commit
 windows-metadata = "0.46"

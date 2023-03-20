@@ -1,6 +1,5 @@
 use camino::Utf8PathBuf as PathBuf;
 use cargo_metadata::Package;
-use quote::ToTokens;
 use syn::{Ident, Item, ItemMod};
 
 #[derive(Copy, Clone, PartialEq, Debug)]
@@ -28,10 +27,10 @@ pub struct BindingFile {
 }
 
 impl BindingFile {
-    pub fn iter_bind_modules(&self) -> impl Iterator<Item = (usize, &ItemMod)> {
+    pub fn iter_bind_modules(&self) -> impl Iterator<Item = &ItemMod> {
         self.mods.iter().filter_map(|(i, _)| {
             if let syn::Item::Mod(modi) = &self.file.items[*i] {
-                Some((*i, modi))
+                Some(modi)
             } else {
                 None
             }
@@ -91,32 +90,49 @@ impl BindingFile {
         let mut file = std::fs::read_to_string(&self.path)
             .with_context(|| format!("failed to read {}", self.path))?;
 
-        let get_span_range = |s: proc_macro2::Span| -> std::ops::Range<usize> {
-            let s = s.unwrap();
-            let start = dbg!(s.start());
-            let end = dbg!(s.end());
-            0..0
-
-            // let s = file.as_bytes();
-
-            // let mut line = 0;
-            // let begin = loop {
-            //     if line < start.line
-            // };
-
-            // begin..end
-        };
+        let mut end = file.len();
 
         // Walk the modules in reverse order so we never have to care about bookkeeping
         for (ind, ts) in self.mods.iter().rev() {
             let Some(ts) = ts else { continue; };
             let Some(syn::Item::Mod(modi)) = self.file.items.get(*ind) else { continue; };
-            let Some(span) = modi.content.as_ref().map(|c| c.0.span) else { continue; };
+
+            let modname = modi.ident.to_string();
+
+            // It'd be nice to get the span of the module braces...but that only
+            // works on nightly...and only in regular proc macros...
+            let range = {
+                let s = &file[..end];
+                let attr = s.rfind("#[minwin]").with_context(|| format!("unable to find attribute for module '{modname}'"))?;
+                end = attr;
+
+                let inner = &s[attr..];
+                let m = inner.find("mod").with_context(|| format!("unable to find mod for module '{modname}'"))?;
+                inner[m..].find(&modname).with_context(|| format!("unable to find mod named '{modname}'"))?;
+
+                let obrace = inner.find('{').with_context(|| format!("unable to find opening brace for module '{modname}'"))?;
+                let mut scope = 1;
+
+                let ebrace = inner[obrace + 1..].char_indices().find_map(|(i, c)| {
+                    if c == '{' {
+                        scope += 1;
+                    } else if c == '}' {
+                        scope -= 1;
+
+                        if scope == 0 {
+                            return Some(i);
+                        }
+                    }
+
+                    None
+                }).with_context(|| format!("unable to find closing brace for module '{}'", modi.ident))?;
+
+                attr + obrace + 1..attr + obrace + ebrace
+            };
 
             // It'd be nice to just insert our generated token stream and replace
             // the contents of the original module...but alas
             // https://github.com/rust-lang/rust/pull/109002
-            let range = get_span_range(span);
             file.replace_range(range, &ts.to_string());
         }
 
@@ -174,8 +190,42 @@ impl Parser {
     }
 
     #[inline]
-    pub fn add_crate(&mut self, _krate: &Package) {
-        //krate.manifest_path.parent().unwrap()
+    pub fn add_crate(&mut self, krate: &Package) {
+        if let Some(kp) = krate.manifest_path.parent() {
+            let src = kp.join("src");
+            let wd = if src.exists() {
+                walkdir::WalkDir::new(&src)
+            } else {
+                // If a src directory doesn't exist, it's _most likely_ the user
+                // just has a few rust source files in the root, but we don't
+                // want to recurse
+                walkdir::WalkDir::new(kp)
+                    .max_depth(1)
+            };
+
+            for file in wd
+                .follow_links(false)
+                .into_iter() {
+                if let Ok(file) = file {
+                    if file.file_type().is_file() {
+                        if let Ok(pb) = PathBuf::from_path_buf(file.into_path()) {
+                            if pb.extension() == Some("rs") {
+                                self.add_file(pb);
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            unreachable!("crate {} didn't have a parent?", krate.name);
+        }
+    }
+
+    #[inline]
+    pub fn add_workspace(&mut self, cm: &cargo_metadata::Metadata) {
+        for wm in cm.workspace_packages() {
+            self.add_crate(wm);
+        }
     }
 
     pub fn parse(&self) -> Vec<BindingFile> {
@@ -209,7 +259,7 @@ impl Parser {
                 .enumerate()
                 .filter_map(|(i, item)| {
                     if let syn::Item::Mod(modi) = item {
-                        if modi.attrs.iter().any(|attr| attr.path.is_ident("minwin")) {
+                        if modi.attrs.iter().any(|attr| attr.path().is_ident("minwin")) {
                             return Some(i);
                         }
                     }
@@ -222,6 +272,8 @@ impl Parser {
                 tracing::debug!("skipping file, no `minwin` modules detected");
                 continue;
             }
+
+            tracing::info!("detected {} minwin modules", mw_mods.len());
 
             pis.push(BindingFile {
                 path: file.clone(),

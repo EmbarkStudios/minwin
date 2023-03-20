@@ -300,9 +300,9 @@ impl<'res> ItemDef<'res> {
                         let fkind = &f.kind;
 
                         if is_union && matches!(fkind, QualType::Record { .. }) {
-                            quote! { #fname: std::mem::ManuallyDrop<#fkind>, }
+                            quote! { pub #fname: std::mem::ManuallyDrop<#fkind>, }
                         } else {
-                            quote! { #fname: #fkind, }
+                            quote! { pub #fname: #fkind, }
                         }
                     });
 
