@@ -87,14 +87,14 @@ impl OutputStream {
     }
 
     fn get_arch_block(&mut self, attrs: Attrs) -> &mut TokenStream {
-        let arches = attrs.intersection(Attrs::ARCH);
+        let arches = attrs & Attrs::ARCH;
 
         if arches.is_empty() {
             &mut self.root
         } else if let Some(ab) = self
             .arches
             .iter()
-            .position(|(attrs, _, _ts)| attrs.contains(arches))
+            .position(|(attrs, _, _ts)| arches.bits() == attrs.bits())
         {
             &mut self.arches[ab].2
         } else {
@@ -151,6 +151,8 @@ impl OutputStream {
             root.extend(quote! {
                 #[cfg(#attrs)]
                 mod #mn {
+                    use super::*;
+
                     #ts
                 }
 
@@ -178,7 +180,7 @@ impl OutputStream {
 #[derive(Debug)]
 enum Item<'res> {
     Function(&'res Func),
-    FunctionPointer(&'res Func),
+    FunctionPointer((&'res Func, bool)),
     Record(&'res Record),
     Constant(&'res Constant),
     Enum(&'res Enum),
@@ -187,25 +189,20 @@ enum Item<'res> {
 
 impl<'res> Item<'res> {
     fn id(&self) -> (BindItemKind, Attrs) {
-        let (bik, mut attrs) = match self {
-            Self::Function(func) => {
-                (BindItemKind::Function, func.attrs)
-            }
-            Self::FunctionPointer(func) => {
-                (BindItemKind::FunctionPtr, func.attrs)
-            }
-            Self::Record(rec) => {
-                (if rec.attrs.contains(Attrs::UNION) { BindItemKind::Union } else { BindItemKind::Struct }, rec.attrs)
-            }
-            Self::Constant(..) => {
-                (BindItemKind::Constant, Attrs::empty())
-            }
-            Self::Enum(..) => {
-                (BindItemKind::Enum, Attrs::empty())
-            }
-            Self::Typedef(..) => {
-                (BindItemKind::Typedef, Attrs::empty())
-            }
+        let (bik, attrs) = match self {
+            Self::Function(func) => (BindItemKind::Function, func.attrs),
+            Self::FunctionPointer((func, ..)) => (BindItemKind::FunctionPtr, func.attrs),
+            Self::Record(rec) => (
+                if rec.attrs.contains(Attrs::UNION) {
+                    BindItemKind::Union
+                } else {
+                    BindItemKind::Struct
+                },
+                rec.attrs,
+            ),
+            Self::Constant(..) => (BindItemKind::Constant, Attrs::empty()),
+            Self::Enum(..) => (BindItemKind::Enum, Attrs::empty()),
+            Self::Typedef(..) => (BindItemKind::Typedef, Attrs::empty()),
         };
 
         (bik, attrs.intersection(Attrs::ARCH))
@@ -233,9 +230,8 @@ impl<'res> ItemDef<'res> {
 
                 let params = func.params.iter().map(|p| {
                     let pname = format_ident!("{}", p.name.as_str());
-                    let mut q = quote! { #pname: };
-                    p.kind.emit(&mut q);
-                    q
+                    let pkind = &p.kind;
+                    quote! { #pname: #pkind }
                 });
 
                 let ts = os.get_extern_block(lib, func.is_system);
@@ -247,23 +243,21 @@ impl<'res> ItemDef<'res> {
                     });
                 }
 
-                ts.extend(quote! {
-                    pub fn #ident(#(#params),*)
-                });
-
-                if let Some(rt) = &func.ret {
-                    ts.extend(quote! { -> });
-                    rt.emit(ts);
+                let ret = if let Some(rt) = &func.ret {
+                    quote! { -> #rt }
+                } else {
+                    TokenStream::new()
                 };
 
-                ts.append(pm::Punct::new(';', pm::Spacing::Alone));
+                ts.extend(quote! {
+                    pub fn #ident(#(#params),*)#ret;
+                });
             }
-            Item::FunctionPointer(func) => {
+            Item::FunctionPointer((func, normal)) => {
                 let params = func.params.iter().map(|p| {
                     let pname = format_ident!("{}", p.name.as_str());
-                    let mut q = quote! { #pname: };
-                    p.kind.emit(&mut q);
-                    q
+                    let pkind = &p.kind;
+                    quote! { #pname: #pkind }
                 });
 
                 let ts = &mut os.root;
@@ -275,16 +269,23 @@ impl<'res> ItemDef<'res> {
                     });
                 }
 
-                ts.extend(quote! {
-                    pub type #ident = Option<unsafe extern "system" fn(#(#params),*)
-                });
-
-                if let Some(rt) = &func.ret {
-                    ts.extend(quote! { -> });
-                    rt.emit(ts);
+                let ret = if let Some(rt) = &func.ret {
+                    quote! { -> #rt }
+                } else {
+                    TokenStream::new()
                 };
 
-                ts.extend(quote! {>;});
+                let ty = if *normal {
+                    quote! {
+                        pub type #ident = Option<unsafe extern "system" fn(#(#params),*)#ret>;
+                    }
+                } else {
+                    quote! {
+                        pub type #ident = unsafe extern "system" fn(#(#params),*)#ret;
+                    }
+                };
+
+                ts.extend(ty);
             }
             Item::Record(rec) => {
                 fn emit_rec(rec: &Record, name: pm::Ident, os: &mut OutputStream) {
@@ -292,19 +293,24 @@ impl<'res> ItemDef<'res> {
                         emit_rec(nested, format_ident!("{name}_{i}"), os);
                     }
 
+                    let is_union = rec.attrs.contains(Attrs::UNION);
+
                     let fields = rec.fields.iter().map(|f| {
                         let fname = format_ident!("{}", f.name.as_str());
-                        let mut q = quote! { #fname: };
-                        f.kind.emit(&mut q);
-                        q.append(pm::Punct::new(',', pm::Spacing::Joint));
-                        q
+                        let fkind = &f.kind;
+
+                        if is_union && matches!(fkind, QualType::Record { .. }) {
+                            quote! { #fname: std::mem::ManuallyDrop<#fkind>, }
+                        } else {
+                            quote! { #fname: #fkind, }
+                        }
                     });
 
                     let ts = os.get_arch_block(rec.attrs);
 
                     let repr = &rec.layout;
 
-                    let rec_kind = if rec.attrs.contains(Attrs::UNION) {
+                    let rec_kind = if is_union {
                         format_ident!("union")
                     } else {
                         format_ident!("struct")
@@ -321,45 +327,30 @@ impl<'res> ItemDef<'res> {
                 emit_rec(rec, ident, os);
             }
             Item::Constant(cnst) => {
-                let ts = &mut os.root;
-                ts.extend(quote! {
-                    const #ident:
-                });
+                let ckind = &cnst.kind;
+                let cval = &cnst.value;
 
-                cnst.kind.emit(ts);
-
-                ts.append(pm::Punct::new('=', pm::Spacing::Alone));
-
-                cnst.value.emit(ts);
-
-                if cnst.needs_conversion {
-                    ts.extend(quote! { as _;});
+                let cnst_item = if cnst.needs_conversion {
+                    quote! { const #ident: #ckind = #cval as _; }
                 } else {
-                    ts.append(pm::Punct::new(';', pm::Spacing::Alone));
-                }
+                    quote! { const #ident: #ckind = #cval; }
+                };
+
+                os.root.extend(cnst_item);
             }
             Item::Typedef(td) => {
-                let ts = &mut os.root;
-                ts.extend(quote! {
-                    pub type #ident =
-                });
-
-                td.emit(ts);
-                ts.append(pm::Punct::new(';', pm::Spacing::Joint));
+                os.root.extend(quote! { pub type #ident = #td; });
             }
             Item::Enum(nm) => {
                 let repr = format_ident!("{}", nm.repr.as_repr()?);
 
                 let variants = nm.variants.iter().map(|v| {
                     let vname = format_ident!("{}", v.name.as_str());
-                    let mut q = quote! { #vname = };
-                    v.value.emit(&mut q);
-                    q.append(pm::Punct::new(',', pm::Spacing::Joint));
-                    q
+                    let val = &v.value;
+                    quote! { #vname = #val, }
                 });
 
-                let ts = &mut os.root;
-                ts.extend(quote! {
+                os.root.extend(quote! {
                     #[repr(#repr)]
                     pub enum #ident {
                         #(#variants)*
@@ -372,8 +363,8 @@ impl<'res> ItemDef<'res> {
     }
 }
 
-impl crate::resolver::Builtin {
-    fn emit(&self, ts: &mut TokenStream) {
+impl ToTokens for crate::resolver::Builtin {
+    fn to_tokens(&self, ts: &mut TokenStream) {
         let q = match self {
             // We support bool even though it's literally only used in the Windows.System.JS namespace :p
             Self::Bool => quote! {bool},
@@ -404,8 +395,8 @@ impl crate::resolver::Builtin {
     }
 }
 
-impl crate::resolver::Value {
-    fn emit(&self, ts: &mut TokenStream) {
+impl ToTokens for crate::resolver::Value {
+    fn to_tokens(&self, ts: &mut TokenStream) {
         use pm::Literal;
         use windows_metadata::reader::Value;
 
@@ -456,10 +447,10 @@ impl crate::resolver::Value {
     }
 }
 
-impl crate::resolver::QualType {
-    fn emit(&self, ts: &mut TokenStream) {
+impl ToTokens for crate::resolver::QualType {
+    fn to_tokens(&self, ts: &mut TokenStream) {
         match self {
-            Self::Builtin(bi) => bi.emit(ts),
+            Self::Builtin(bi) => bi.to_tokens(ts),
             Self::Record { name }
             | Self::Enum { name }
             | Self::FunctionPointer { name }
@@ -473,12 +464,12 @@ impl crate::resolver::QualType {
                     quote! {*mut}
                 });
 
-                pointee.emit(ts);
+                pointee.to_tokens(ts);
             }
             Self::Array { element, len } => {
                 ts.append(pm::Punct::new('[', pm::Spacing::Joint));
 
-                element.emit(ts);
+                element.to_tokens(ts);
 
                 ts.append(pm::Punct::new(';', pm::Spacing::Alone));
                 ts.append(pm::Literal::u32_unsuffixed(*len));
@@ -498,16 +489,21 @@ fn get_namespace<'res>(res: &'res Resolver, name: &Ustr) -> &'res TreeItems {
 
 fn def_for_type<'res>(res: &'res Resolver, qt: &QualType, ns: Option<&Ustr>) -> Vec<ItemDef<'res>> {
     let found = match qt {
-        QualType::Record { name } => get_record(res, name, ns),
-        QualType::Typedef { name } => get_typedef(res, name, ns),
-        QualType::FunctionPointer { name } => get_func_ptr(res, name, ns),
+        QualType::Record { name } => get_items(res, BindItemKind::Struct, name, ns),
+        QualType::Typedef { name } => get_items(res, BindItemKind::Typedef, name, ns),
+        QualType::FunctionPointer { name } => get_items(res, BindItemKind::FunctionPtr, name, ns),
         QualType::Array { element, .. } => def_for_type(res, element, ns),
-        QualType::Enum { name } => get_enum(res, name, ns),
+        QualType::Enum { name } => get_items(res, BindItemKind::Enum, name, ns),
         QualType::Pointer { pointee, .. } => def_for_type(res, pointee, ns),
         QualType::Builtin(bi) => match bi {
             Builtin::Guid => {
                 let mut items = Vec::new();
-                items.append(&mut get_record(res, &"GUID".into(), None));
+                items.append(&mut get_items(
+                    res,
+                    BindItemKind::Struct,
+                    &"GUID".into(),
+                    None,
+                ));
                 items.push(ItemDef {
                     item: Item::Typedef(QualType::Record {
                         name: "GUID".into(),
@@ -541,13 +537,14 @@ fn def_for_type<'res>(res: &'res Resolver, qt: &QualType, ns: Option<&Ustr>) -> 
         },
     };
 
+    found
     // If we couldn't locate an item in the same namespace as it was requested,
     // try again but searching _all_ namespaces
-    if found.is_empty() && ns.is_some() {
-        def_for_type(res, qt, None)
-    } else {
-        found
-    }
+    // if found.is_empty() && ns.is_some() {
+    //     def_for_type(res, qt, None)
+    // } else {
+    //     found
+    // }
 }
 
 #[inline]
@@ -566,179 +563,129 @@ fn get_func_deps<'res>(res: &'res Resolver, func: &'res Func, ns: &Ustr) -> Vec<
 }
 
 #[inline]
-fn get_rec_deps<'res>(res: &'res Resolver, rec: &'res Record, ns: &Ustr) -> Vec<ItemDef<'res>> {
-    rec.fields
-        .iter()
-        .flat_map(|f| def_for_type(res, &f.kind, Some(ns)))
-        .collect()
-}
-
-fn get_func_ptr<'res>(res: &'res Resolver, name: &Ustr, ns: Option<&Ustr>) -> Vec<ItemDef<'res>> {
-    if let Some(ns) = ns {
-        let items = get_namespace(res, &ns);
-
-        if let Some(funcs) = items.function_pointers.get(name) {
-            funcs
-                .iter()
-                .map(|f| {
-                    let dependencies = get_func_deps(res, f, ns);
-
-                    ItemDef {
-                        item: Item::FunctionPointer(f),
-                        ident: *name,
-                        namespace: Some(*ns),
-                        dependencies,
-                    }
-                })
-                .collect()
-        } else {
-            Vec::new()
-        }
-    } else {
-        let mut items = Vec::new();
-        for (ns, _) in &res.namespaces {
-            let mut fi = get_func_ptr(res, name, Some(ns));
-            items.append(&mut fi);
-        }
-        items
+fn get_rec_deps<'res>(
+    res: &'res Resolver,
+    rec: &'res Record,
+    ns: &Ustr,
+    deps: &mut Vec<ItemDef<'res>>,
+) {
+    for nested in &rec.nested {
+        get_rec_deps(res, nested, ns, deps);
     }
+
+    deps.extend(
+        rec.fields
+            .iter()
+            .flat_map(|f| def_for_type(res, &f.kind, Some(ns))),
+    )
 }
 
-fn get_function<'res>(res: &'res Resolver, name: &Ustr, ns: Option<&Ustr>) -> Vec<ItemDef<'res>> {
-    if let Some(ns) = ns {
-        let items = get_namespace(res, &ns);
+fn get_items<'res>(
+    res: &'res Resolver,
+    kind: BindItemKind,
+    name: &Ustr,
+    ns: Option<&Ustr>,
+) -> Vec<ItemDef<'res>> {
+    fn inner<'res>(
+        res: &'res Resolver,
+        kind: BindItemKind,
+        name: &Ustr,
+        ns_name: &Ustr,
+        ns: &'res TreeItems,
+    ) -> Option<Vec<ItemDef<'res>>> {
+        match kind {
+            BindItemKind::Function => ns.functions.get(name).map(|funcs| {
+                funcs
+                    .iter()
+                    .map(|f| {
+                        let dependencies = get_func_deps(res, f, ns_name);
 
-        if let Some(funcs) = items.functions.get(name) {
-            funcs
-                .iter()
-                .map(|f| {
-                    let dependencies = get_func_deps(res, f, ns);
+                        ItemDef {
+                            item: Item::Function(f),
+                            ident: *name,
+                            namespace: Some(*ns_name),
+                            dependencies,
+                        }
+                    })
+                    .collect()
+            }),
+            BindItemKind::FunctionPtr => ns.function_pointers.get(name).map(|funcs| {
+                funcs
+                    .iter()
+                    .map(|f| {
+                        let dependencies = get_func_deps(res, f, ns_name);
 
-                    ItemDef {
-                        item: Item::Function(f),
-                        ident: *name,
-                        namespace: Some(*ns),
-                        dependencies,
-                    }
-                })
-                .collect()
-        } else {
-            Vec::new()
-        }
-    } else {
-        let mut items = Vec::new();
-        for (ns, _) in &res.namespaces {
-            let mut fi = get_function(res, name, Some(ns));
-            items.append(&mut fi);
-        }
-        items
-    }
-}
+                        ItemDef {
+                            item: Item::FunctionPointer((f, true)),
+                            ident: *name,
+                            namespace: Some(*ns_name),
+                            dependencies,
+                        }
+                    })
+                    .collect()
+            }),
+            BindItemKind::Struct | BindItemKind::Union => ns.records.get(name).map(|recs| {
+                recs.iter()
+                    .map(|r| {
+                        let mut dependencies = Vec::new();
+                        get_rec_deps(res, r, ns_name, &mut dependencies);
 
-fn get_record<'res>(res: &'res Resolver, name: &Ustr, ns: Option<&Ustr>) -> Vec<ItemDef<'res>> {
-    if let Some(ns) = ns {
-        let items = get_namespace(res, &ns);
-
-        if let Some(recs) = items.records.get(name) {
-            recs.iter()
-                .map(|rec| {
-                    let dependencies = get_rec_deps(res, rec, ns);
-
-                    ItemDef {
-                        item: Item::Record(rec),
-                        ident: *name,
-                        namespace: Some(*ns),
-                        dependencies,
-                    }
-                })
-                .collect()
-        } else {
-            Vec::new()
-        }
-    } else {
-        let mut items = Vec::new();
-        for (ns, _) in &res.namespaces {
-            let mut fi = get_record(res, name, Some(ns));
-            items.append(&mut fi);
-        }
-        items
-    }
-}
-
-fn get_constant<'res>(res: &'res Resolver, name: &Ustr, ns: Option<&Ustr>) -> Vec<ItemDef<'res>> {
-    if let Some(ns) = ns {
-        let items = get_namespace(res, &ns);
-
-        if let Some(cnst) = items.constants.get(name) {
-            vec![ItemDef {
-                item: Item::Constant(cnst),
-                ident: *name,
-                namespace: Some(*ns),
-                dependencies: def_for_type(res, &cnst.kind, Some(ns))
-                    .into_iter()
-                    .collect(),
-            }]
-        } else {
-            Vec::new()
-        }
-    } else {
-        let mut items = Vec::new();
-        for (ns, _) in &res.namespaces {
-            let mut fi = get_constant(res, name, Some(ns));
-            items.append(&mut fi);
-        }
-        items
-    }
-}
-
-fn get_typedef<'res>(res: &'res Resolver, name: &Ustr, ns: Option<&Ustr>) -> Vec<ItemDef<'res>> {
-    if let Some(ns) = ns {
-        let items = get_namespace(res, &ns);
-
-        if let Some(tds) = items.typedefs.get(name) {
-            tds.iter()
-                .map(|f| ItemDef {
-                    item: Item::Typedef(f.clone()),
+                        ItemDef {
+                            item: Item::Record(r),
+                            ident: *name,
+                            namespace: Some(*ns_name),
+                            dependencies,
+                        }
+                    })
+                    .collect()
+            }),
+            BindItemKind::Constant => ns.constants.get(name).map(|cnst| {
+                vec![ItemDef {
+                    item: Item::Constant(cnst),
                     ident: *name,
-                    namespace: Some(*ns),
-                    dependencies: def_for_type(res, f, Some(ns)),
-                })
-                .collect()
-        } else {
-            Vec::new()
+                    namespace: Some(*ns_name),
+                    dependencies: def_for_type(res, &cnst.kind, Some(ns_name))
+                        .into_iter()
+                        .collect(),
+                }]
+            }),
+            BindItemKind::Typedef => ns.typedefs.get(name).map(|tds| {
+                tds.iter()
+                    .map(|f| ItemDef {
+                        item: Item::Typedef(f.clone()),
+                        ident: *name,
+                        namespace: Some(*ns_name),
+                        dependencies: def_for_type(res, f, Some(ns_name)),
+                    })
+                    .collect()
+            }),
+            BindItemKind::Enum => ns.enums.get(name).map(|enm| {
+                vec![ItemDef {
+                    item: Item::Enum(enm),
+                    ident: *name,
+                    namespace: Some(*ns_name),
+                    dependencies: Vec::new(),
+                }]
+            }),
         }
-    } else {
-        let mut items = Vec::new();
-        for (ns, _) in &res.namespaces {
-            let mut fi = get_typedef(res, name, Some(ns));
-            items.append(&mut fi);
-        }
-        items
     }
-}
 
-fn get_enum<'res>(res: &'res Resolver, name: &Ustr, ns: Option<&Ustr>) -> Vec<ItemDef<'res>> {
     if let Some(ns) = ns {
-        let items = get_namespace(res, &ns);
-
-        if let Some(enm) = items.enums.get(name) {
-            vec![ItemDef {
-                item: Item::Enum(enm),
-                ident: *name,
-                namespace: Some(*ns),
-                dependencies: Vec::new(),
-            }]
-        } else {
-            Vec::new()
+        if let Some(located) = inner(res, kind, name, ns, get_namespace(res, ns)) {
+            return located;
         }
-    } else {
-        let mut items = Vec::new();
-        for (ns, _) in &res.namespaces {
-            let mut fi = get_enum(res, name, Some(ns));
-            items.append(&mut fi);
-        }
-        items
     }
+
+    let v = res
+        .namespaces
+        .iter()
+        .fold(Vec::new(), |mut v, (ns_name, ns)| {
+            let Some(mut id) = inner(res, kind, name, ns_name, ns) else { return v };
+            v.append(&mut id);
+            v
+        });
+
+    v
 }
 
 fn locate_items<'m, 'res>(
@@ -747,42 +694,22 @@ fn locate_items<'m, 'res>(
 ) -> Vec<(BindItem<'m>, Vec<ItemDef<'res>>)> {
     BindingFile::iter_module(modi).map_or(Vec::new(), |i| {
         i.map(|bi| {
-            let mut items = Vec::new();
             let name = bi.ident.to_string().into();
 
-            match bi.kind {
-                BindItemKind::Function => {
-                    items.append(&mut get_function(res, &name, None));
-                }
-                BindItemKind::FunctionPtr => {
-                    items.append(&mut get_func_ptr(res, &name, None));
+            let mut items = get_items(res, bi.kind, &name, None);
 
-                    // In some cases, the user may want to create function pointers for
-                    // actual concrete functions for use with eg. GetProcAddress
-                    if items.is_empty() {
-                        let mut fi = get_function(res, &name, None);
+            // In some cases, the user may want to create function pointers for
+            // actual concrete functions for use with eg. GetProcAddress
+            if bi.kind == BindItemKind::FunctionPtr && items.is_empty() {
+                let mut fi = get_items(res, BindItemKind::Function, &name, None);
 
-                        for f in &mut fi {
-                            if let Item::Function(func) = f.item {
-                                f.item = Item::FunctionPointer(func);
-                            }
-                        }
-
-                        items.append(&mut fi);
+                for f in &mut fi {
+                    if let Item::Function(func) = f.item {
+                        f.item = Item::FunctionPointer((func, false));
                     }
                 }
-                BindItemKind::Struct | BindItemKind::Union => {
-                    items.append(&mut get_record(res, &name, None));
-                }
-                BindItemKind::Constant => {
-                    items.append(&mut get_constant(res, &name, None));
-                }
-                BindItemKind::Typedef => {
-                    items.append(&mut get_typedef(res, &name, None));
-                }
-                BindItemKind::Enum => {
-                    items.append(&mut get_enum(res, &name, None));
-                }
+
+                items.append(&mut fi);
             }
 
             (bi, items)
@@ -811,9 +738,10 @@ fn insert(emitted: &mut UstrMap<Vec<Emitted>>, item: &ItemDef<'_>) -> bool {
         return true;
     };
 
-    if let Some(ind) = pi.iter().position(|e| {
-        e.namespace == item.namespace && e.kind == kind
-    }) {
+    if let Some(ind) = pi
+        .iter()
+        .position(|e| e.namespace == item.namespace && e.kind == kind)
+    {
         let existing = &mut pi[ind];
         if attrs.is_empty() && existing.attrs.is_empty() || attrs.intersects(existing.attrs) {
             return false;
@@ -852,13 +780,11 @@ fn emit_item(
 pub fn generate(res: &Resolver, modi: &syn::ItemMod) -> anyhow::Result<TokenStream> {
     let items = locate_items(res, modi);
 
-    dbg!(&items);
-
     let mut os = OutputStream::new();
 
     let mut emitted = UstrMap::default();
 
-    for (bi, defs) in items {
+    for (_bi, defs) in items {
         for def in defs {
             emit_item(&def, &mut os, &mut emitted)?;
         }
@@ -866,28 +792,3 @@ pub fn generate(res: &Resolver, modi: &syn::ItemMod) -> anyhow::Result<TokenStre
 
     Ok(os.finalize())
 }
-
-// pub fn format() {
-//     pub fn format(namespace: &str, tokens: &mut String) {
-//         let mut child = std::process::Command::new("rustfmt")
-//             .stdin(std::process::Stdio::piped())
-//             .stdout(std::process::Stdio::piped())
-//             .stderr(std::process::Stdio::null())
-//             .spawn()
-//             .expect("Failed to spawn `rustfmt`");
-//         let mut stdin = child.stdin.take().expect("Failed to open stdin");
-//         stdin.write_all(tokens.as_bytes()).unwrap();
-//         drop(stdin);
-//         let output = child.wait_with_output().unwrap();
-
-//         if output.status.success() {
-//             *tokens = String::from_utf8(output.stdout).expect("Failed to parse UTF-8");
-//         } else {
-//             println!(
-//                 "rustfmt failed for `{namespace}` with status {}\nError:\n{}",
-//                 output.status,
-//                 String::from_utf8_lossy(&output.stderr)
-//             );
-//         }
-//     }
-// }

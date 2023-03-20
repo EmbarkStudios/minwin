@@ -19,7 +19,7 @@ pub struct ArchLayouts(Vec<ArchLayout>);
 
 impl ArchLayouts {
     #[inline]
-    pub fn get_layout(&self, name: &str, attrs: Attrs) -> RecordLayout {
+    pub fn get_layout(&self, attrs: Attrs) -> RecordLayout {
         let arches = attrs.intersection(Attrs::ARCH).bits();
 
         if arches == 0 || self.0[0].a == 0 {
@@ -281,7 +281,7 @@ impl fmt::Debug for Value {
             Value::F32(v) => write!(f, "{v}: f32"),
             Value::F64(v) => write!(f, "{v}: f64"),
             Value::String(s) => f.write_str(s),
-            Value::Enum(td, v) => {
+            Value::Enum(_td, v) => {
                 use windows_metadata::reader::Integer;
                 match v {
                     Integer::I8(v) => write!(f, "{v}: enum i8"),
@@ -786,6 +786,8 @@ impl Resolver {
 
         let flags = reader.type_def_flags(def);
 
+        let name = reader.type_def_name(def).into();
+
         let attrs = {
             let mut attrs = Self::get_attrs(reader, reader.type_def_attributes(def));
 
@@ -794,13 +796,16 @@ impl Resolver {
             }
 
             if let Some(parent) = parent {
-                attrs.insert(Self::get_attrs(reader, reader.type_def_attributes(parent)).intersection(Attrs::ARCH));
+                //let pname = reader.type_def_name(parent);
+
+                let paattrs = Self::get_attrs(reader, reader.type_def_attributes(parent))
+                    .intersection(Attrs::ARCH);
+
+                attrs.insert(paattrs);
             }
 
             attrs
         };
-
-        let name = reader.type_def_name(def).into();
 
         // The windows metadata is missing vital layout information
         // 1. Alignment isn't collected at all https://github.com/microsoft/win32metadata/issues/1044
@@ -820,7 +825,7 @@ impl Resolver {
             let md_packing = reader.class_layout_packing_size(cl) as u8;
 
             if let Some(layouts) = clang_layout {
-                let layout = layouts.get_layout(name.as_str(), attrs);
+                let layout = layouts.get_layout(attrs);
 
                 match &layout {
                     RecordLayout::None => {
@@ -855,7 +860,7 @@ impl Resolver {
                 RecordLayout::Agnostic(Layout::Packed(md_packing))
             }
         } else if let Some(cl) = clang_layout {
-            cl.get_layout(name.as_str(), attrs)
+            cl.get_layout(attrs)
         } else {
             RecordLayout::None
         };
@@ -907,8 +912,6 @@ impl Resolver {
     }
 
     fn get_constant(reader: &Reader<'_>, def: reader::Field) -> anyhow::Result<Option<Constant>> {
-        let name = reader.field_name(def);
-
         let Some(constant) = reader.field_constant(def) else { return Ok(None) };
         let kind = reader.constant_type(constant);
         let needs_conversion = kind != reader.field_type(def, None).to_const();

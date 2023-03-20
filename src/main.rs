@@ -1,8 +1,8 @@
 use camino::Utf8PathBuf as PathBuf;
 use clap::Parser;
-use rayon::prelude::*;
-use windows_bindgen as bindgen;
-use windows_metadata as metadata;
+// use rayon::prelude::*;
+// use windows_bindgen as bindgen;
+// use windows_metadata as metadata;
 
 #[derive(clap::Parser)]
 struct Cmd {
@@ -21,7 +21,7 @@ struct Cmd {
 }
 
 fn main() {
-    let cmd = Cmd::parse();
+    let _cmd = Cmd::parse();
 }
 
 //     let mut output = std::path::PathBuf::from("crates/libs/sys/src/Windows");

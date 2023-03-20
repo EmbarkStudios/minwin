@@ -2,11 +2,10 @@
 source: tests/parsing.rs
 expression: actual
 ---
-tests/data/input.rs
+tests/data/parking_lot.rs
 mod example
     Constant INFINITE
     Constant ERROR_TIMEOUT
-    Function GetLastError
     Function GetModuleHandleA
     Function GetProcAddress
     FunctionPtr WaitAddress

@@ -1,0 +1,41 @@
+---
+source: tests/generation.rs
+expression: generated
+---
+mod bindings {
+    pub type BOOL = i32;
+    pub type HANDLE = isize;
+    #[repr(C)]
+    pub struct OVERLAPPED_0_0 {
+        Offset: u32,
+        OffsetHigh: u32,
+    }
+    #[repr(C)]
+    pub union OVERLAPPED_0 {
+        Anonymous: std::mem::ManuallyDrop<OVERLAPPED_0_0>,
+        Pointer: *mut std::ffi::c_void,
+    }
+    #[repr(C)]
+    pub struct OVERLAPPED {
+        Internal: usize,
+        InternalHigh: usize,
+        Anonymous: OVERLAPPED_0,
+        hEvent: HANDLE,
+    }
+    pub type LPOVERLAPPED_COMPLETION_ROUTINE = Option<
+        unsafe extern "system" fn(
+            dwErrorCode: u32,
+            dwNumberOfBytesTransfered: u32,
+            lpOverlapped: *mut OVERLAPPED,
+        ),
+    >;
+    #[link(name = "kernel32")]
+    extern "system" {
+        pub fn BindIoCompletionCallback(
+            FileHandle: HANDLE,
+            Function: LPOVERLAPPED_COMPLETION_ROUTINE,
+            Flags: u32,
+        ) -> BOOL;
+    }
+}
+
