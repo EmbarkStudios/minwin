@@ -19,8 +19,8 @@ mod example {
     pub type WakeByAddressSingle = unsafe extern "system" fn(Address: *const std::ffi::c_void);
     #[link(name = "kernel32")]
     extern "system" {
-        pub fn GetModuleHandleA(lpModuleName: *const std::ffi::c_char) -> HINSTANCE;
-        pub fn GetProcAddress(hModule: HINSTANCE, lpProcName: *const std::ffi::c_char) -> FARPROC;
+        pub fn GetModuleHandleA(lpModuleName: *const u8) -> HINSTANCE;
+        pub fn GetProcAddress(hModule: HINSTANCE, lpProcName: *const u8) -> FARPROC;
     }
 }
 
