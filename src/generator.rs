@@ -414,13 +414,12 @@ impl ToTokens for crate::resolver::Value {
                 unreachable!();
             }
             Value::String(ref s) => {
+                let s = format!("{s}\0");
                 if self.is_wide_str {
                     let lits = s.encode_utf16().map(|u| Literal::u16_unsuffixed(u));
 
-                    let com = format!("// {s}");
-
                     ts.extend(quote! {
-                        #com
+                        #[doc = #s]
                         [#(#lits),*].as_ptr()
                     });
                 } else {
@@ -537,13 +536,6 @@ fn def_for_type<'res>(res: &'res Resolver, qt: &QualType, ns: Option<&Ustr>) -> 
     };
 
     found
-    // If we couldn't locate an item in the same namespace as it was requested,
-    // try again but searching _all_ namespaces
-    // if found.is_empty() && ns.is_some() {
-    //     def_for_type(res, qt, None)
-    // } else {
-    //     found
-    // }
 }
 
 #[inline]
