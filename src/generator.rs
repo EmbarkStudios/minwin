@@ -575,6 +575,17 @@ fn get_rec_deps<'res>(
     deps.extend(
         rec.fields
             .iter()
+            .filter(|f| {
+                // We need to account for self pointers so we don't recurse
+                // infinitely and overflow the stack :p
+                if let QualType::Record { name } = f.kind.get_inner() {
+                    if name == &rec.name {
+                        return false;
+                    }
+                }
+
+                true
+            })
             .flat_map(|f| def_for_type(res, &f.kind, Some(ns))),
     )
 }

@@ -197,6 +197,16 @@ pub enum QualType {
     },
 }
 
+impl QualType {
+    #[inline]
+    pub fn get_inner(&self) -> &Self {
+        match self {
+            Self::Pointer { pointee, .. } => pointee.get_inner(),
+            other => other,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct Item {
     pub name: Ustr,
@@ -234,6 +244,7 @@ pub enum RecordLayout {
 
 #[derive(Debug)]
 pub struct Record {
+    pub name: Ustr,
     pub fields: Vec<Item>,
     pub layout: RecordLayout,
     pub attrs: Attrs,
@@ -747,10 +758,13 @@ impl Resolver {
         clang_layouts: &UstrMap<ArchLayouts>,
         parent: Option<reader::TypeDef>,
     ) -> anyhow::Result<Option<Record>> {
+        let name = reader.type_def_name(def).into();
+
         // Check if this is actually only used as an opaque pointer
         if reader.type_def_fields(def).next().is_none() {
             tracing::trace!("found opaque struct");
             return Ok(Some(Record {
+                name,
                 fields: vec![Item {
                     name: "_unused".into(),
                     kind: QualType::Array {
@@ -786,8 +800,6 @@ impl Resolver {
 
         let flags = reader.type_def_flags(def);
 
-        let name = reader.type_def_name(def).into();
-
         let attrs = {
             let mut attrs = Self::get_attrs(reader, reader.type_def_attributes(def));
 
@@ -796,8 +808,6 @@ impl Resolver {
             }
 
             if let Some(parent) = parent {
-                //let pname = reader.type_def_name(parent);
-
                 let paattrs = Self::get_attrs(reader, reader.type_def_attributes(parent))
                     .intersection(Attrs::ARCH);
 
@@ -879,6 +889,7 @@ impl Resolver {
         };
 
         Ok(Some(Record {
+            name,
             fields,
             layout,
             attrs,
