@@ -331,9 +331,9 @@ impl<'res> ItemDef<'res> {
                 let cval = &cnst.value;
 
                 let cnst_item = if cnst.needs_conversion {
-                    quote! { const #ident: #ckind = #cval as _; }
+                    quote! { pub const #ident: #ckind = #cval as _; }
                 } else {
-                    quote! { const #ident: #ckind = #cval; }
+                    quote! { pub const #ident: #ckind = #cval; }
                 };
 
                 os.root.extend(cnst_item);

@@ -13,7 +13,7 @@ expression: generated
 
 #[minwin]
 mod example {
-    const INFINITE: u32 = 4294967295;
+    pub const INFINITE: u32 = 4294967295;
     pub type HINSTANCE = isize;
     pub type FARPROC = Option<unsafe extern "system" fn() -> isize>;
     pub type WakeByAddressSingle = unsafe extern "system" fn(Address: *const std::ffi::c_void);
