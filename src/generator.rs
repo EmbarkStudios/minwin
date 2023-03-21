@@ -344,17 +344,16 @@ impl<'res> ItemDef<'res> {
             Item::Enum(nm) => {
                 let repr = format_ident!("{}", nm.repr.as_repr()?);
 
+                os.root.extend(quote! { pub type #ident = #repr; });
+
                 let variants = nm.variants.iter().map(|v| {
                     let vname = format_ident!("{}", v.name.as_str());
                     let val = &v.value;
-                    quote! { #vname = #val, }
+                    quote! { pub const #vname: #ident = #val; }
                 });
 
                 os.root.extend(quote! {
-                    #[repr(#repr)]
-                    pub enum #ident {
-                        #(#variants)*
-                    }
+                    #(#variants)*
                 });
             }
         }
