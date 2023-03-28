@@ -6,7 +6,7 @@ use crate::{
 use anyhow::Context as _;
 use proc_macro2::{self as pm, TokenStream};
 use quote::{format_ident, quote, ToTokens, TokenStreamExt};
-use ustr::{Ustr, UstrMap};
+use ustr::{Ustr, UstrMap, UstrSet};
 
 impl ToTokens for Attrs {
     fn to_tokens(&self, ts: &mut TokenStream) {
@@ -779,7 +779,22 @@ fn emit_item(
     Ok(())
 }
 
-pub fn generate(res: &Resolver, modi: &syn::ItemMod) -> anyhow::Result<TokenStream> {
+pub struct NsRatios {
+    namespace: Ustr,
+    constants: UstrSet,
+    enum_values: UstrSet,
+    records: UstrSet,
+    functions: UstrSet,
+    function_ptrs: UstrSet,
+}
+
+pub struct Ratios {
+    ns: Vec<NsRatios>,
+}
+
+
+
+pub fn generate(res: &Resolver, modi: &syn::ItemMod, ratios: &mut Ratios) -> anyhow::Result<TokenStream> {
     let items = locate_items(res, modi);
 
     let mut os = OutputStream::new();
