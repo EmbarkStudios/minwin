@@ -17,7 +17,19 @@ pub enum BindItemKind {
 pub struct BindItem<'pi> {
     pub module: &'pi ItemMod,
     pub kind: BindItemKind,
+    pub inner: &'pi Item,
     pub ident: &'pi Ident,
+}
+
+impl<'pi> BindItem<'pi> {
+    #[inline]
+    pub fn iter_enum(&self) -> Option<impl Iterator<Item = &'pi Ident>> {
+        if let Item::Enum(enm) = self.inner {
+            Some(enm.variants.iter().map(|v| &v.ident))
+        } else {
+            None
+        }
+    }
 }
 
 pub struct BindingFile {
@@ -68,6 +80,7 @@ impl BindingFile {
             Some(BindItem {
                 module: modi,
                 kind,
+                inner: item,
                 ident,
             })
         }))
@@ -103,29 +116,42 @@ impl BindingFile {
             // works on nightly...and only in regular proc macros...
             let range = {
                 let s = &file[..end];
-                let attr = s.rfind("#[minwin]").with_context(|| format!("unable to find attribute for module '{modname}'"))?;
+                let attr = s
+                    .rfind("#[minwin]")
+                    .with_context(|| format!("unable to find attribute for module '{modname}'"))?;
                 end = attr;
 
                 let inner = &s[attr..];
-                let m = inner.find("mod").with_context(|| format!("unable to find mod for module '{modname}'"))?;
-                inner[m..].find(&modname).with_context(|| format!("unable to find mod named '{modname}'"))?;
+                let m = inner
+                    .find("mod")
+                    .with_context(|| format!("unable to find mod for module '{modname}'"))?;
+                inner[m..]
+                    .find(&modname)
+                    .with_context(|| format!("unable to find mod named '{modname}'"))?;
 
-                let obrace = inner.find('{').with_context(|| format!("unable to find opening brace for module '{modname}'"))?;
+                let obrace = inner.find('{').with_context(|| {
+                    format!("unable to find opening brace for module '{modname}'")
+                })?;
                 let mut scope = 1;
 
-                let ebrace = inner[obrace + 1..].char_indices().find_map(|(i, c)| {
-                    if c == '{' {
-                        scope += 1;
-                    } else if c == '}' {
-                        scope -= 1;
+                let ebrace = inner[obrace + 1..]
+                    .char_indices()
+                    .find_map(|(i, c)| {
+                        if c == '{' {
+                            scope += 1;
+                        } else if c == '}' {
+                            scope -= 1;
 
-                        if scope == 0 {
-                            return Some(i);
+                            if scope == 0 {
+                                return Some(i);
+                            }
                         }
-                    }
 
-                    None
-                }).with_context(|| format!("unable to find closing brace for module '{}'", modi.ident))?;
+                        None
+                    })
+                    .with_context(|| {
+                        format!("unable to find closing brace for module '{}'", modi.ident)
+                    })?;
 
                 attr + obrace + 1..attr + obrace + ebrace
             };
@@ -199,13 +225,10 @@ impl Parser {
                 // If a src directory doesn't exist, it's _most likely_ the user
                 // just has a few rust source files in the root, but we don't
                 // want to recurse
-                walkdir::WalkDir::new(kp)
-                    .max_depth(1)
+                walkdir::WalkDir::new(kp).max_depth(1)
             };
 
-            for file in wd
-                .follow_links(false)
-                .into_iter() {
+            for file in wd.follow_links(false).into_iter() {
                 if let Ok(file) = file {
                     if file.file_type().is_file() {
                         if let Ok(pb) = PathBuf::from_path_buf(file.into_path()) {

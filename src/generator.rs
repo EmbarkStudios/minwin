@@ -180,10 +180,10 @@ impl OutputStream {
 #[derive(Debug)]
 enum Item<'res> {
     Function(&'res Func),
-    FunctionPointer((&'res Func, bool)),
+    FunctionPointer(&'res Func, bool),
     Record(&'res Record),
     Constant(&'res Constant),
-    Enum(&'res Enum),
+    Enum(&'res Enum, Option<Vec<Ustr>>),
     Typedef(QualType),
 }
 
@@ -191,7 +191,7 @@ impl<'res> Item<'res> {
     fn id(&self) -> (BindItemKind, Attrs) {
         let (bik, attrs) = match self {
             Self::Function(func) => (BindItemKind::Function, func.attrs),
-            Self::FunctionPointer((func, ..)) => (BindItemKind::FunctionPtr, func.attrs),
+            Self::FunctionPointer(func, ..) => (BindItemKind::FunctionPtr, func.attrs),
             Self::Record(rec) => (
                 if rec.attrs.contains(Attrs::UNION) {
                     BindItemKind::Union
@@ -253,12 +253,7 @@ impl<'res> ItemDef<'res> {
                     pub fn #ident(#(#params),*)#ret;
                 });
             }
-            Item::FunctionPointer((func, normal)) => {
-                let params = func.params.iter().map(|p| {
-                    let pname = format_ident!("{}", p.name.as_str());
-                    let pkind = &p.kind;
-                    quote! { #pname: #pkind }
-                });
+            Item::FunctionPointer(func, normal) => {
 
                 let ts = &mut os.root;
 
@@ -341,15 +336,21 @@ impl<'res> ItemDef<'res> {
             Item::Typedef(td) => {
                 os.root.extend(quote! { pub type #ident = #td; });
             }
-            Item::Enum(nm) => {
+            Item::Enum(nm, vars) => {
                 let repr = format_ident!("{}", nm.repr.as_repr()?);
 
                 os.root.extend(quote! { pub type #ident = #repr; });
 
-                let variants = nm.variants.iter().map(|v| {
-                    let vname = format_ident!("{}", v.name.as_str());
+                let variants = nm.variants.iter().filter_map(|v| {
+                    if let Some(vars) = vars {
+                        if !vars.is_empty() && !vars.contains(&v.name) {
+                            tracing::debug!("skipping {}::{}", self.ident, v.name);
+                            return None;
+                        }
+                    }
+                    let vname = to_ident(&v.name, convert_case, IdentKind::Variant(None));
                     let val = &v.value;
-                    quote! { pub const #vname: #ident = #val; }
+                    Some(quote! { pub const #vname: #ident = #val; })
                 });
 
                 os.root.extend(quote! {
@@ -487,12 +488,14 @@ fn get_namespace<'res>(res: &'res Resolver, name: &Ustr) -> &'res TreeItems {
 
 fn def_for_type<'res>(res: &'res Resolver, qt: &QualType, ns: Option<&Ustr>) -> Vec<ItemDef<'res>> {
     let found = match qt {
-        QualType::Record { name } => get_items(res, BindItemKind::Struct, name, ns),
-        QualType::Typedef { name } => get_items(res, BindItemKind::Typedef, name, ns),
-        QualType::FunctionPointer { name } => get_items(res, BindItemKind::FunctionPtr, name, ns),
+        QualType::Record { name } => get_items(res, BindItemKind::Struct, name, ns, None),
+        QualType::Typedef { name } => get_items(res, BindItemKind::Typedef, name, ns, None),
+        QualType::FunctionPointer { name } => {
+            get_items(res, BindItemKind::FunctionPtr, name, ns, None)
+        }
         QualType::Array { element, .. } => def_for_type(res, element, ns),
-        QualType::Enum { name } => get_items(res, BindItemKind::Enum, name, ns),
-        QualType::Pointer { pointee, .. } => def_for_type(res, pointee, ns),
+        QualType::Enum { name } => get_items(res, BindItemKind::Enum, name, ns, None),
+        QualType::Pointer { pointee, .. } => def_for_type(res, pointee, None),
         QualType::Builtin(bi) => match bi {
             Builtin::Guid => {
                 let mut items = Vec::new();
@@ -500,6 +503,7 @@ fn def_for_type<'res>(res: &'res Resolver, qt: &QualType, ns: Option<&Ustr>) -> 
                     res,
                     BindItemKind::Struct,
                     &"GUID".into(),
+                    None,
                     None,
                 ));
                 items.push(ItemDef {
@@ -587,6 +591,7 @@ fn get_items<'res>(
     kind: BindItemKind,
     name: &Ustr,
     ns: Option<&Ustr>,
+    variants: Option<&Vec<Ustr>>,
 ) -> Vec<ItemDef<'res>> {
     fn inner<'res>(
         res: &'res Resolver,
@@ -594,6 +599,7 @@ fn get_items<'res>(
         name: &Ustr,
         ns_name: &Ustr,
         ns: &'res TreeItems,
+        variants: Option<&Vec<Ustr>>,
     ) -> Option<Vec<ItemDef<'res>>> {
         match kind {
             BindItemKind::Function => ns.functions.get(name).map(|funcs| {
@@ -618,7 +624,7 @@ fn get_items<'res>(
                         let dependencies = get_func_deps(res, f, ns_name);
 
                         ItemDef {
-                            item: Item::FunctionPointer((f, true)),
+                            item: Item::FunctionPointer(f, true),
                             ident: *name,
                             namespace: Some(*ns_name),
                             dependencies,
@@ -663,7 +669,7 @@ fn get_items<'res>(
             }),
             BindItemKind::Enum => ns.enums.get(name).map(|enm| {
                 vec![ItemDef {
-                    item: Item::Enum(enm),
+                    item: Item::Enum(enm, variants.cloned()),
                     ident: *name,
                     namespace: Some(*ns_name),
                     dependencies: Vec::new(),
@@ -673,7 +679,7 @@ fn get_items<'res>(
     }
 
     if let Some(ns) = ns {
-        if let Some(located) = inner(res, kind, name, ns, get_namespace(res, ns)) {
+        if let Some(located) = inner(res, kind, name, ns, get_namespace(res, ns), variants) {
             return located;
         }
     }
@@ -682,7 +688,7 @@ fn get_items<'res>(
         .namespaces
         .iter()
         .fold(Vec::new(), |mut v, (ns_name, ns)| {
-            let Some(mut id) = inner(res, kind, name, ns_name, ns) else { return v };
+            let Some(mut id) = inner(res, kind, name, ns_name, ns, variants) else { return v };
             v.append(&mut id);
             v
         });
@@ -698,16 +704,20 @@ fn locate_items<'m, 'res>(
         i.map(|bi| {
             let name = bi.ident.to_string().into();
 
-            let mut items = get_items(res, bi.kind, &name, None);
+            let variants = bi
+                .iter_enum()
+                .map(|variants| variants.map(|i| i.to_string().into()).collect());
+
+            let mut items = get_items(res, bi.kind, &name, None, variants.as_ref());
 
             // In some cases, the user may want to create function pointers for
             // actual concrete functions for use with eg. GetProcAddress
             if bi.kind == BindItemKind::FunctionPtr && items.is_empty() {
-                let mut fi = get_items(res, BindItemKind::Function, &name, None);
+                let mut fi = get_items(res, BindItemKind::Function, &name, None, None);
 
                 for f in &mut fi {
                     if let Item::Function(func) = f.item {
-                        f.item = Item::FunctionPointer((func, false));
+                        f.item = Item::FunctionPointer(func, false);
                     }
                 }
 
