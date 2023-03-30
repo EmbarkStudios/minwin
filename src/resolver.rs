@@ -380,7 +380,7 @@ impl Resolver {
         ];
 
         let win32 = reader
-            .tree("Windows.Win32", &reader::Filter::new(&[], EXCLUDED_NAMESPACES));
+            .tree("Windows.Win32", &reader::Filter::new(&["Windows.Win32"], EXCLUDED_NAMESPACES));
 
         let root = reader::Tree {
             namespace: "Windows",
