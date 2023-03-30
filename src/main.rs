@@ -1,6 +1,6 @@
+use anyhow::Context as _;
 use camino::Utf8PathBuf as PathBuf;
 use clap::Parser;
-use anyhow::Context as _;
 
 #[derive(clap::Parser)]
 struct Cmd {
@@ -42,10 +42,16 @@ fn main() -> anyhow::Result<()> {
         }
     } else {
         let cmd = cargo_metadata::MetadataCommand::new();
-        let cm = cmd.exec().context("failed to gather metadata for workspace")?;
+        let cm = cmd
+            .exec()
+            .context("failed to gather metadata for workspace")?;
 
         if let Some(package) = opts.package {
-            let krate = cm.packages.iter().find(|pkg| pkg.name == package).with_context(|| format!("unable to locate crate '{package}'"))?;
+            let krate = cm
+                .packages
+                .iter()
+                .find(|pkg| pkg.name == package)
+                .with_context(|| format!("unable to locate crate '{package}'"))?;
             parser.add_crate(krate);
         } else {
             parser.add_workspace(&cm);
@@ -53,13 +59,20 @@ fn main() -> anyhow::Result<()> {
     }
 
     let mut parsed = parser.parse();
-    let resolver = res.join().map_err(|_err| anyhow::anyhow!("failed to join"))??;
+    let resolver = res
+        .join()
+        .map_err(|_err| anyhow::anyhow!("failed to join"))??;
 
     for pf in &mut parsed {
-        let genned = pf.iter_bind_modules().enumerate().map(|(i, m)| {
-            let ts = minwin::generate(&resolver, m).with_context(|| format!("{}", m.ident))?;
-            Ok((i, ts))
-        }).collect::<anyhow::Result<Vec<_>>>()?;
+        let genned = pf
+            .iter_bind_modules()
+            .enumerate()
+            .map(|(i, m)| {
+                let ts = minwin::generate(&resolver, m, false)
+                    .with_context(|| format!("{}", m.ident))?;
+                Ok((i, ts))
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
 
         for (i, ts) in genned {
             pf.replace_module(i, ts)?;
@@ -69,7 +82,8 @@ fn main() -> anyhow::Result<()> {
     let run_rustfmt = !opts.no_fmt;
 
     for pf in parsed {
-        pf.replace(run_rustfmt).with_context(|| format!("failed to generate bindings in '{}'", pf.path))?;
+        pf.replace(run_rustfmt)
+            .with_context(|| format!("failed to generate bindings in '{}'", pf.path))?;
     }
 
     Ok(())

@@ -10,7 +10,7 @@
 
 use anyhow::Context as _;
 
-fn generate(input: &str, format: bool) {
+fn generate(input: &str, format: bool, convert_case: bool) {
     let mut parser = minwin::Parser::default();
     parser.add_file(format!("tests/data/{input}.rs"));
     let mut parsed = parser.parse().pop().unwrap();
@@ -22,7 +22,8 @@ fn generate(input: &str, format: bool) {
         .iter_bind_modules()
         .enumerate()
         .map(|(i, m)| {
-            let ts = minwin::generate(&resolved, m).with_context(|| format!("{}", m.ident))?;
+            let ts = minwin::generate(&resolved, m, convert_case)
+                .with_context(|| format!("{}", m.ident))?;
             Ok((i, ts))
         })
         .collect::<anyhow::Result<Vec<_>>>()
@@ -43,7 +44,7 @@ fn generate(input: &str, format: bool) {
 /// with eg. `GetProcAddress`
 #[test]
 fn delegates_for_functions() {
-    generate("parking_lot", true);
+    generate("parking_lot", true, false);
 }
 
 /// Ensures we can generate more complex types
@@ -53,7 +54,7 @@ fn delegates_for_functions() {
 /// 4. Nested structs/unions
 #[test]
 fn complex() {
-    generate("md_writer", true);
+    generate("md_writer", true, false);
 }
 
 /// While the windows metadata professes to encourage enums instead of plain
@@ -61,11 +62,11 @@ fn complex() {
 /// basics
 #[test]
 fn enums() {
-    generate("enums", true);
+    generate("enums", true, false);
 }
 
 /// Ensures we can emit function pointers for actual function pointers
 #[test]
 fn delegates() {
-    generate("delegates", true);
+    generate("delegates", true, false);
 }

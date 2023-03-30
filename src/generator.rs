@@ -207,6 +207,94 @@ impl<'res> Item<'res> {
 
         (bik, attrs.intersection(Attrs::ARCH))
     }
+
+    fn kind(&self) -> IdentKind<'res> {
+        match self {
+            Self::Constant(_) => IdentKind::Const,
+            Self::Enum(..) => IdentKind::Enum,
+            Self::Function(_) => IdentKind::Function,
+            Self::FunctionPointer(..) => IdentKind::FunctionPointer,
+            Self::Record(_) => IdentKind::Record,
+            Self::Typedef(_) => IdentKind::Type,
+        }
+    }
+}
+
+#[derive(Copy, Clone)]
+enum IdentKind<'res> {
+    Const,
+    Enum,
+    Field,
+    Function,
+    FunctionPointer,
+    Param,
+    Record,
+    Type,
+    Variant(Option<&'res str>),
+}
+
+impl<'res> From<&'res QualType> for IdentKind<'res> {
+    fn from(qt: &'res QualType) -> Self {
+        match qt {
+            QualType::Record { .. } => Self::Record,
+            QualType::Enum { .. } => Self::Enum,
+            QualType::FunctionPointer { .. } => Self::FunctionPointer,
+            QualType::Typedef { .. } => IdentKind::Type,
+            _ => unreachable!("invalid qualtype kind"),
+        }
+    }
+}
+
+impl<'res> IdentKind<'res> {
+    fn convert(self, name: &str) -> String {
+        use heck::*;
+
+        match self {
+            Self::Const => name.to_shouty_snake_case(),
+            Self::Enum | Self::Record | Self::FunctionPointer | Self::Type => {
+                name.to_upper_camel_case()
+            }
+            Self::Field | Self::Param => {
+                // Many, but not all, record fields/params use Hungarian notation
+                // which is ugly and pointless, so we strip it off before case conversion
+                let to_skip = name.find(|c: char| c.is_ascii_uppercase()).unwrap_or(0);
+                name[to_skip..].to_snake_case()
+            }
+            Self::Function => name.to_snake_case(),
+            Self::Variant(prefix) => {
+                let unprefixed = prefix
+                    .and_then(|prefix| name.strip_prefix(prefix))
+                    .unwrap_or(name);
+                unprefixed.to_upper_camel_case()
+            }
+        }
+    }
+}
+
+#[inline]
+#[rustfmt::skip]
+fn to_ident(name: &Ustr, convert_case: bool, kind: IdentKind) -> pm::Ident {
+    let mut is = if convert_case {
+        kind.convert(&name)
+    } else {
+        name.to_owned()
+    };
+
+    // keywords list based on https://doc.rust-lang.org/reference/keywords.html
+    if matches!(
+        is.as_str(),
+        "abstract" | "as" | "become" | "box" | "break" | "const" | "continue" |
+        "crate" | "do" | "else" | "enum" | "extern" | "false" | "final" | "fn" |
+        "for" | "if" | "impl" | "in" | "let" | "loop" | "macro" | "match" | "mod" |
+        "move" | "mut" | "override" | "priv" | "pub" | "ref" | "return" | "static" |
+        "struct" | "super" | "trait" | "true" | "type" | "typeof" | "unsafe" |
+        "unsized" | "use" | "virtual" | "where" | "while" | "yield" | "try" |
+        "async" | "await" | "dyn" | "self" | "Self"
+    ) {
+        is.push('_');
+    }
+
+    format_ident!("{is}")
 }
 
 #[derive(Debug)]
@@ -217,9 +305,18 @@ struct ItemDef<'res> {
     dependencies: Vec<ItemDef<'res>>,
 }
 
+#[inline]
+fn get_params(func: &Func, convert_case: bool) -> impl Iterator<Item = TokenStream> + '_ {
+    func.params.iter().map(move |p| {
+        let pname = to_ident(&p.name, convert_case, IdentKind::Param);
+        let pkind = QtPrint::from((&p.kind, convert_case));
+        quote! { #pname: #pkind }
+    })
+}
+
 impl<'res> ItemDef<'res> {
-    fn emit(&self, os: &mut OutputStream) -> anyhow::Result<()> {
-        let ident = format_ident!("{}", self.ident.as_str());
+    fn emit(&self, convert_case: bool, os: &mut OutputStream) -> anyhow::Result<()> {
+        let ident = to_ident(&self.ident, convert_case, self.item.kind());
 
         match &self.item {
             Item::Function(func) => {
@@ -227,12 +324,6 @@ impl<'res> ItemDef<'res> {
                     .module
                     .as_ref()
                     .with_context(|| format!("function '{ident}' did not state its library"))?;
-
-                let params = func.params.iter().map(|p| {
-                    let pname = format_ident!("{}", p.name.as_str());
-                    let pkind = &p.kind;
-                    quote! { #pname: #pkind }
-                });
 
                 let ts = os.get_extern_block(lib, func.is_system);
 
@@ -243,7 +334,10 @@ impl<'res> ItemDef<'res> {
                     });
                 }
 
+                let params = get_params(func, convert_case);
+
                 let ret = if let Some(rt) = &func.ret {
+                    let rt = QtPrint::from((rt, convert_case));
                     quote! { -> #rt }
                 } else {
                     TokenStream::new()
@@ -254,6 +348,7 @@ impl<'res> ItemDef<'res> {
                 });
             }
             Item::FunctionPointer(func, normal) => {
+                let params = get_params(func, convert_case);
 
                 let ts = &mut os.root;
 
@@ -265,6 +360,7 @@ impl<'res> ItemDef<'res> {
                 }
 
                 let ret = if let Some(rt) = &func.ret {
+                    let rt = QtPrint::from((rt, convert_case));
                     quote! { -> #rt }
                 } else {
                     TokenStream::new()
@@ -283,21 +379,27 @@ impl<'res> ItemDef<'res> {
                 ts.extend(ty);
             }
             Item::Record(rec) => {
-                fn emit_rec(rec: &Record, name: pm::Ident, os: &mut OutputStream) {
+                fn emit_rec(
+                    rec: &Record,
+                    name: pm::Ident,
+                    convert_case: bool,
+                    os: &mut OutputStream,
+                ) {
                     for (i, nested) in rec.nested.iter().enumerate() {
-                        emit_rec(nested, format_ident!("{name}_{i}"), os);
+                        emit_rec(nested, format_ident!("{name}_{i}"), convert_case, os);
                     }
 
                     let is_union = rec.attrs.contains(Attrs::UNION);
 
                     let fields = rec.fields.iter().map(|f| {
-                        let fname = format_ident!("{}", f.name.as_str());
+                        let fname = to_ident(&f.name, convert_case, IdentKind::Field);
                         let fkind = &f.kind;
+                        let fqt = QtPrint::from((fkind, convert_case));
 
                         if is_union && matches!(fkind, QualType::Record { .. }) {
-                            quote! { pub #fname: std::mem::ManuallyDrop<#fkind>, }
+                            quote! { pub #fname: std::mem::ManuallyDrop<#fqt>, }
                         } else {
-                            quote! { pub #fname: #fkind, }
+                            quote! { pub #fname: #fqt, }
                         }
                     });
 
@@ -319,10 +421,10 @@ impl<'res> ItemDef<'res> {
                     });
                 }
 
-                emit_rec(rec, ident, os);
+                emit_rec(rec, ident, convert_case, os);
             }
             Item::Constant(cnst) => {
-                let ckind = &cnst.kind;
+                let ckind = QtPrint::from((&cnst.kind, convert_case));
                 let cval = &cnst.value;
 
                 let cnst_item = if cnst.needs_conversion {
@@ -334,6 +436,7 @@ impl<'res> ItemDef<'res> {
                 os.root.extend(cnst_item);
             }
             Item::Typedef(td) => {
+                let td = QtPrint::from((td, convert_case));
                 os.root.extend(quote! { pub type #ident = #td; });
             }
             Item::Enum(nm, vars) => {
@@ -446,29 +549,38 @@ impl ToTokens for crate::resolver::Value {
     }
 }
 
-impl ToTokens for crate::resolver::QualType {
+use crate::resolver::QualType;
+struct QtPrint<'res>((&'res QualType, bool));
+
+impl<'res> From<(&'res QualType, bool)> for QtPrint<'res> {
+    fn from(t: (&'res QualType, bool)) -> Self {
+        Self(t)
+    }
+}
+
+impl<'res> ToTokens for QtPrint<'res> {
     fn to_tokens(&self, ts: &mut TokenStream) {
-        match self {
-            Self::Builtin(bi) => bi.to_tokens(ts),
-            Self::Record { name }
-            | Self::Enum { name }
-            | Self::FunctionPointer { name }
-            | Self::Typedef { name } => {
-                ts.append(pm::Ident::new(name.as_str(), pm::Span::call_site()));
+        match self.0 .0 {
+            QualType::Builtin(bi) => bi.to_tokens(ts),
+            QualType::Record { name }
+            | QualType::Enum { name }
+            | QualType::FunctionPointer { name }
+            | QualType::Typedef { name } => {
+                ts.append(to_ident(name, self.0 .1, self.0 .0.into()));
             }
-            Self::Pointer { is_const, pointee } => {
+            QualType::Pointer { is_const, pointee } => {
                 ts.extend(if *is_const {
                     quote! {*const}
                 } else {
                     quote! {*mut}
                 });
 
-                pointee.to_tokens(ts);
+                Self((pointee, self.0 .1)).to_tokens(ts);
             }
-            Self::Array { element, len } => {
+            QualType::Array { element, len } => {
                 ts.append(pm::Punct::new('[', pm::Spacing::Joint));
 
-                element.to_tokens(ts);
+                Self((element, self.0 .1)).to_tokens(ts);
 
                 ts.append(pm::Punct::new(';', pm::Spacing::Alone));
                 ts.append(pm::Literal::u32_unsuffixed(*len));
@@ -774,6 +886,7 @@ fn insert(emitted: &mut UstrMap<Vec<Emitted>>, item: &ItemDef<'_>) -> bool {
 #[inline]
 fn emit_item(
     def: &ItemDef<'_>,
+    convert_case: bool,
     os: &mut OutputStream,
     emitted: &mut UstrMap<Vec<Emitted>>,
 ) -> anyhow::Result<()> {
@@ -782,29 +895,32 @@ fn emit_item(
     }
 
     for dep in &def.dependencies {
-        emit_item(dep, os, emitted)?;
+        emit_item(dep, convert_case, os, emitted)?;
     }
 
-    def.emit(os)?;
+    def.emit(convert_case, os)?;
     Ok(())
 }
 
-pub struct NsRatios {
-    namespace: Ustr,
-    constants: UstrSet,
-    enum_values: UstrSet,
-    records: UstrSet,
-    functions: UstrSet,
-    function_ptrs: UstrSet,
-}
+// pub struct NsRatios {
+//     namespace: Ustr,
+//     constants: UstrSet,
+//     enum_values: UstrSet,
+//     records: UstrSet,
+//     functions: UstrSet,
+//     function_ptrs: UstrSet,
+// }
 
-pub struct Ratios {
-    ns: Vec<NsRatios>,
-}
+// pub struct Ratios {
+//     ns: Vec<NsRatios>,
+// }
 
-
-
-pub fn generate(res: &Resolver, modi: &syn::ItemMod, ratios: &mut Ratios) -> anyhow::Result<TokenStream> {
+pub fn generate(
+    res: &Resolver,
+    modi: &syn::ItemMod,
+    convert_case: bool,
+    /*, ratios: &mut Ratios&*/
+) -> anyhow::Result<TokenStream> {
     let items = locate_items(res, modi);
 
     let mut os = OutputStream::new();
@@ -813,7 +929,7 @@ pub fn generate(res: &Resolver, modi: &syn::ItemMod, ratios: &mut Ratios) -> any
 
     for (_bi, defs) in items {
         for def in defs {
-            emit_item(&def, &mut os, &mut emitted)?;
+            emit_item(&def, convert_case, &mut os, &mut emitted)?;
         }
     }
 
