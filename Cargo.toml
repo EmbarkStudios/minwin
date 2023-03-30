@@ -38,8 +38,8 @@ ustr = { version = "0.9", features = ["serialization"] }
 walkdir = "2.3"
 # When bumping versions, run `cargo run --manifest-path update/Cargo.toml` to
 # get the winmd files that match the publish commit
-windows-metadata = "0.46"
-windows-bindgen = "0.46"
+windows-metadata = "0.47"
+windows-bindgen = "0.47"
 zstd = "0.12"
 
 [dev-dependencies]

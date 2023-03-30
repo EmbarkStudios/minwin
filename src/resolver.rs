@@ -380,8 +380,7 @@ impl Resolver {
         ];
 
         let win32 = reader
-            .tree("Windows.Win32", EXCLUDED_NAMESPACES)
-            .context("failed to find Windows.Win32 namespace")?;
+            .tree("Windows.Win32", &reader::Filter::new(&[], EXCLUDED_NAMESPACES));
 
         let root = reader::Tree {
             namespace: "Windows",
@@ -529,7 +528,7 @@ impl Resolver {
         let mut function_pointers = UstrMap::default();
         let mut typedefs = UstrMap::default();
 
-        for def in reader.namespace_types(tree.namespace) {
+        for def in reader.namespace_types(tree.namespace, &reader::Filter::default()) {
             let type_name = reader.type_def_type_name(def);
             let name = type_name.name;
             let kind = reader.type_def_kind(def);
@@ -925,7 +924,7 @@ impl Resolver {
     fn get_constant(reader: &Reader<'_>, def: reader::Field) -> anyhow::Result<Option<Constant>> {
         let Some(constant) = reader.field_constant(def) else { return Ok(None) };
         let kind = reader.constant_type(constant);
-        let needs_conversion = kind != reader.field_type(def, None).to_const();
+        let needs_conversion = kind != reader.field_type(def, None).to_const_type();
 
         let mut is_wide_str = false;
 
