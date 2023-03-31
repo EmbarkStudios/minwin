@@ -1,6 +1,7 @@
 use camino::Utf8PathBuf as PathBuf;
 use cargo_metadata::Package;
 use syn::{Ident, Item, ItemMod};
+use ustr::Ustr;
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 pub enum BindItemKind {
@@ -19,6 +20,7 @@ pub struct BindItem<'pi> {
     pub kind: BindItemKind,
     pub inner: &'pi Item,
     pub ident: &'pi Ident,
+    pub namespace: Option<Ustr>,
 }
 
 impl<'pi> BindItem<'pi> {
@@ -61,17 +63,36 @@ impl BindingFile {
 
     pub fn iter_module(modi: &ItemMod) -> Option<impl Iterator<Item = BindItem<'_>>> {
         Some(modi.content.as_ref()?.1.iter().filter_map(|item| {
-            let (kind, ident) = match item {
-                Item::Enum(enm) => (BindItemKind::Enum, &enm.ident),
-                Item::Const(cnst) => (BindItemKind::Constant, &cnst.ident),
-                Item::Fn(func) => (BindItemKind::Function, &func.sig.ident),
-                Item::Struct(stru) => (BindItemKind::Struct, &stru.ident),
-                Item::Union(un) => (BindItemKind::Union, &un.ident),
+            let ns = |attrs: &[syn::Attribute]| -> Option<Ustr> {
+                attrs.iter().find_map(|attr| {
+                    let syn::Meta::NameValue(nv) = &attr.meta else { return None; };
+                    if !nv.path.is_ident("ns") {
+                        None
+                    } else {
+                        if let syn::Expr::Lit(syn::ExprLit {
+                            lit: syn::Lit::Str(lit),
+                            ..
+                        }) = &nv.value
+                        {
+                            Some(Ustr::from(&lit.value()))
+                        } else {
+                            None
+                        }
+                    }
+                })
+            };
+
+            let (kind, ident, namespace) = match item {
+                Item::Enum(enm) => (BindItemKind::Enum, &enm.ident, ns(&enm.attrs)),
+                Item::Const(cnst) => (BindItemKind::Constant, &cnst.ident, ns(&cnst.attrs)),
+                Item::Fn(func) => (BindItemKind::Function, &func.sig.ident, ns(&func.attrs)),
+                Item::Struct(stru) => (BindItemKind::Struct, &stru.ident, ns(&stru.attrs)),
+                Item::Union(un) => (BindItemKind::Union, &un.ident, ns(&un.attrs)),
                 Item::Type(ty) => {
                     if matches!(*ty.ty, syn::Type::BareFn(_)) {
-                        (BindItemKind::FunctionPtr, &ty.ident)
+                        (BindItemKind::FunctionPtr, &ty.ident, ns(&ty.attrs))
                     } else {
-                        (BindItemKind::Typedef, &ty.ident)
+                        (BindItemKind::Typedef, &ty.ident, ns(&ty.attrs))
                     }
                 }
                 _ => return None,
@@ -82,6 +103,7 @@ impl BindingFile {
                 kind,
                 inner: item,
                 ident,
+                namespace,
             })
         }))
     }
@@ -97,6 +119,28 @@ impl BindingFile {
                 }
             })
             .flatten()
+    }
+
+    pub fn gather_hints(&self, hints: &mut crate::resolver::Hints) {
+        for (ns, hint) in self.iter_binds().filter_map(|bi| {
+            let ns = bi.namespace?;
+
+            if bi.kind != BindItemKind::Enum {
+                None
+            } else {
+                let name = bi.ident.to_string();
+
+                if name.starts_with('_') {
+                    Some((ns, crate::resolver::Hint::SuffixedEnum(name.into())))
+                } else if name.ends_with('_') {
+                    Some((ns, crate::resolver::Hint::PrefixedEnum(name.into())))
+                } else {
+                    None
+                }
+            }
+        }) {
+            hints.add_hint(ns, hint);
+        }
     }
 
     pub fn generate(&self, format: bool) -> anyhow::Result<String> {

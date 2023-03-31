@@ -13,4 +13,10 @@ mod enums {
         FILE_NOTIFY_CHANGE_LAST_WRITE,
         FILE_NOTIFY_CHANGE_SIZE,
     }
+
+    #[ns = "Windows.Win32.Security.Cryptography"]
+    enum ALG_ {}
+
+    #[ns = "Windows.Win32.Security.Cryptography"]
+    enum _PROP_ID {}
 }

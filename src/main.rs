@@ -30,12 +30,6 @@ fn main() -> anyhow::Result<()> {
 
     let mut parser = minwin::Parser::default();
 
-    let res = std::thread::spawn(|| -> anyhow::Result<_> {
-        let md = minwin::MetadataFiles::new().context("failed to gather metadata files")?;
-        let resolver = minwin::Resolver::flatten(&md).context("failed to resolve metadata")?;
-        Ok(resolver)
-    });
-
     if !opts.files.is_empty() {
         for file in opts.files {
             parser.add_file(file);
@@ -59,9 +53,15 @@ fn main() -> anyhow::Result<()> {
     }
 
     let mut parsed = parser.parse();
-    let resolver = res
-        .join()
-        .map_err(|_err| anyhow::anyhow!("failed to join"))??;
+
+    let mut hints = minwin::Hints::default();
+
+    for bf in &parsed {
+        bf.gather_hints(&mut hints);
+    }
+
+    let md = minwin::MetadataFiles::new().context("failed to gather metadata files")?;
+    let resolver = minwin::Resolver::flatten(&md, hints).context("failed to resolve metadata")?;
 
     for pf in &mut parsed {
         let genned = pf

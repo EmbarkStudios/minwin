@@ -1,7 +1,8 @@
 #[test]
 fn resolves() {
     let files = minwin::MetadataFiles::new().expect("failed to load metadata");
-    let _resolver = minwin::Resolver::flatten(&files).expect("failed to resolve metadata");
+    let _resolver = minwin::Resolver::flatten(&files, minwin::Hints::default())
+        .expect("failed to resolve metadata");
 
     // resolver
     //     .namespaces

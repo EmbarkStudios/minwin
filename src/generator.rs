@@ -814,18 +814,25 @@ fn locate_items<'m, 'res>(
 ) -> Vec<(BindItem<'m>, Vec<ItemDef<'res>>)> {
     BindingFile::iter_module(modi).map_or(Vec::new(), |i| {
         i.map(|bi| {
-            let name = bi.ident.to_string().into();
+            let name = bi.ident.to_string();
+            let name = if bi.kind == BindItemKind::Enum {
+                name.trim_matches('_').into()
+            } else {
+                name.into()
+            };
 
             let variants = bi
                 .iter_enum()
                 .map(|variants| variants.map(|i| i.to_string().into()).collect());
 
-            let mut items = get_items(res, bi.kind, &name, None, variants.as_ref());
+            let ns = bi.namespace.as_ref();
+
+            let mut items = get_items(res, bi.kind, &name, ns, variants.as_ref());
 
             // In some cases, the user may want to create function pointers for
             // actual concrete functions for use with eg. GetProcAddress
             if bi.kind == BindItemKind::FunctionPtr && items.is_empty() {
-                let mut fi = get_items(res, BindItemKind::Function, &name, None, None);
+                let mut fi = get_items(res, BindItemKind::Function, &name, ns, None);
 
                 for f in &mut fi {
                     if let Item::Function(func) = f.item {

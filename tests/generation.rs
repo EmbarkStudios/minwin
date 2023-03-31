@@ -15,8 +15,11 @@ fn generate(input: &str, format: bool, convert_case: bool) {
     parser.add_file(format!("tests/data/{input}.rs"));
     let mut parsed = parser.parse().pop().unwrap();
 
+    let mut hints = minwin::Hints::default();
+    parsed.gather_hints(&mut hints);
+
     let md = minwin::MetadataFiles::new().expect("failed to gather metadata files");
-    let resolved = minwin::Resolver::flatten(&md).expect("failed to resolve metadata");
+    let resolved = minwin::Resolver::flatten(&md, hints).expect("failed to resolve metadata");
 
     let generated = parsed
         .iter_bind_modules()

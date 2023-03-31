@@ -333,6 +333,29 @@ pub struct Resolver {
     pub namespaces: Vec<(Ustr, TreeItems)>,
 }
 
+#[derive(Copy, Clone)]
+pub enum Hint {
+    /// Hints that there is a logical enum that is a collection of prefix constants
+    PrefixedEnum(Ustr),
+    /// Hints that there is a logical enum that is a collection of suffixed constants
+    SuffixedEnum(Ustr),
+}
+
+#[derive(Default)]
+pub struct Hints {
+    namespaces: UstrMap<Vec<Hint>>,
+}
+
+impl Hints {
+    #[inline]
+    pub fn add_hint(&mut self, ns: Ustr, hint: Hint) {
+        self.namespaces
+            .entry(ns)
+            .and_modify(|v| v.push(hint))
+            .or_insert_with(|| vec![hint]);
+    }
+}
+
 #[derive(Default)]
 pub struct TreeItems {
     pub constants: UstrMap<Constant>,
@@ -344,7 +367,7 @@ pub struct TreeItems {
 }
 
 impl Resolver {
-    pub fn flatten(md: &MetadataFiles) -> anyhow::Result<Self> {
+    pub fn flatten(md: &MetadataFiles, hints: Hints) -> anyhow::Result<Self> {
         let reader = reader::Reader::new(&md.files);
 
         // windows-sys doesn't care about these, so neither do we
@@ -379,8 +402,10 @@ impl Resolver {
             "Windows.Win32.UI.Xaml",
         ];
 
-        let win32 = reader
-            .tree("Windows.Win32", &reader::Filter::new(&["Windows.Win32"], EXCLUDED_NAMESPACES));
+        let win32 = reader.tree(
+            "Windows.Win32",
+            &reader::Filter::new(&["Windows.Win32"], EXCLUDED_NAMESPACES),
+        );
 
         let root = reader::Tree {
             namespace: "Windows",
@@ -391,8 +416,10 @@ impl Resolver {
         let namespaces = trees
             .par_iter()
             .map(|tree| {
-                Self::get_items(&reader, tree, &md.layouts)
-                    .map(|ti| (Ustr::from(tree.namespace), ti))
+                let ns_name = Ustr::from(tree.namespace);
+                let hints = hints.namespaces.get(&ns_name);
+
+                Self::get_items(&reader, tree, &md.layouts, hints).map(|ti| (ns_name, ti))
             })
             .try_fold(
                 || Vec::with_capacity(trees.len()),
@@ -518,6 +545,7 @@ impl Resolver {
         reader: &Reader<'_>,
         tree: &reader::Tree<'_>,
         layouts: &UstrMap<ArchLayouts>,
+        hints: Option<&Vec<Hint>>,
     ) -> anyhow::Result<TreeItems> {
         use reader::TypeKind;
 
@@ -527,6 +555,24 @@ impl Resolver {
         let mut enums = UstrMap::default();
         let mut function_pointers = UstrMap::default();
         let mut typedefs = UstrMap::default();
+
+        let mut hinted_enums = hints
+            .map(|hints| {
+                hints
+                    .iter()
+                    .filter_map(|h| {
+                        match h {
+                            Hint::PrefixedEnum(prefix) => {
+                                Some((prefix, true, Vec::<(Ustr, Constant)>::new()))
+                            }
+                            Hint::SuffixedEnum(suffix) => {
+                                Some((suffix, false, Vec::<(Ustr, Constant)>::new()))
+                            }
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
 
         for def in reader.namespace_types(tree.namespace, &reader::Filter::default()) {
             let type_name = reader.type_def_type_name(def);
@@ -575,9 +621,20 @@ impl Resolver {
                                     Self::get_constant(reader, field).with_context(|| {
                                         format!("failed to resolve constant '{cname}'")
                                     })? else { continue; };
-                                if let Some(old) = constants.insert(cname.into(), constant) {
+
+                                if let Some(hinted_enum) =
+                                    hinted_enums.iter_mut().find_map(|(fix, is_prefix, v)| {
+                                        if (*is_prefix && cname.starts_with(fix.as_str())) || (!*is_prefix && cname.ends_with(fix.as_str())) {
+                                            Some(v)
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                {
+                                    hinted_enum.push((cname.into(), constant));
+                                } else if let Some(old) = constants.insert(cname.into(), constant) {
                                     anyhow::bail!(
-                                        "a constant named '{name}' already existed: {old:?}"
+                                        "a constant named '{cname}' already existed: {old:?}"
                                     );
                                 }
                             }
@@ -632,6 +689,55 @@ impl Resolver {
                 }
                 TypeKind::Interface => {
                     tracing::trace!("we don't care about interface '{name}'");
+                }
+            }
+        }
+
+        for (fix, is_prefix , consts) in hinted_enums {
+            match consts.iter().try_fold(None, |cur, (name, cnst)| {
+                let QualType::Builtin(bi) = cnst.kind.clone() else { anyhow::bail!("constant '{name}' is not a builtin type") };
+                if let Some(c) = cur {
+                    anyhow::ensure!(c == bi, "constant '{name}' has a different type than the previous constants");
+                    Ok(Some(bi))
+                } else {
+                    Ok(Some(bi))
+                }
+            }) {
+                Err(err) => {
+                    tracing::error!(error = %err, "failed to gather hinted enum '{fix}', falling back to constants");
+
+                    for (cname, constant) in consts {
+                        if let Some(old) = constants.insert(cname, constant) {
+                            anyhow::bail!(
+                                "a constant named '{cname}' already existed: {old:?}"
+                            );
+                        }
+                    }
+                }
+                Ok(repr) => {
+                    let Some(repr) = repr else { continue };
+                    
+                    let enm = Enum {
+                        repr,
+                        variants: consts.into_iter().map(|(name, cnst)| {
+                            EnumVariant {
+                                name,
+                                value: cnst.value,
+                            }
+                        }).collect(),
+                    };
+
+                    let enum_name = if is_prefix {
+                        fix.trim_end_matches('_')
+                    } else {
+                        fix.trim_start_matches('_')
+                    }.into();
+
+                    if let Some(old) = enums.insert(enum_name, enm) {
+                        anyhow::bail!(
+                            "hinted enum '{fix}' already existed: {old:?}"
+                        );
+                    }
                 }
             }
         }
