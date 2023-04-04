@@ -862,9 +862,9 @@ checksum = "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f"
 
 [[package]]
 name = "windows-bindgen"
-version = "0.47.0"
+version = "0.48.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "16d0214b06baed6c3f7b9d91a989086c699980b0fdd36d98f7428f8893b7dfd7"
+checksum = "1fe21a77bc54b7312dbd66f041605e098990c98be48cd52967b85b5e60e75ae6"
 dependencies = [
  "windows-metadata",
  "windows-tokens",
@@ -872,9 +872,9 @@ dependencies = [
 
 [[package]]
 name = "windows-metadata"
-version = "0.47.0"
+version = "0.48.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "045175cc7417f20cfd58ef2081ab1f24935308fc9d787438700f724edc9249c9"
+checksum = "422ee0e5f0e2cc372bb6addbfff9a8add712155cd743df9c15f6ab000f31432d"
 
 [[package]]
 name = "windows-sys"
@@ -917,9 +917,9 @@ dependencies = [
 
 [[package]]
 name = "windows-tokens"
-version = "0.47.0"
+version = "0.48.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fda24dd3a03fa9c747742c34cf4b799e320d85fb31718c4e4b78fd00f345e4e1"
+checksum = "b34c9a3b28cb41db7385546f7f9a8179348dffc89923dde66857b1ba5312f6b4"
 
 [[package]]
 name = "windows_aarch64_gnullvm"
