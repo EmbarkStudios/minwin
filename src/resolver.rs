@@ -121,6 +121,7 @@ pub enum Builtin {
 }
 
 impl Builtin {
+    #[inline]
     pub fn as_repr(self) -> anyhow::Result<&'static str> {
         let rep = match self {
             Self::Char => "i8",
@@ -135,6 +136,11 @@ impl Builtin {
         };
 
         Ok(rep)
+    }
+
+    #[inline]
+    pub fn is_integer(&self) -> bool {
+        matches!(self, Self::Char | Self::UChar | Self::Short | Self::UShort | Self::Int | Self::UInt | Self::Long | Self::ULong)
     }
 }
 
@@ -203,6 +209,15 @@ impl QualType {
         match self {
             Self::Pointer { pointee, .. } => pointee.get_inner(),
             other => other,
+        }
+    }
+
+    #[inline]
+    pub fn is_integer(&self) -> bool {
+        if let Self::Builtin(bi) = self {
+            bi.is_integer()
+        } else {
+            false
         }
     }
 }
@@ -624,7 +639,7 @@ impl Resolver {
 
                                 if let Some(hinted_enum) =
                                     hinted_enums.iter_mut().find_map(|(fix, is_prefix, v)| {
-                                        if (*is_prefix && cname.starts_with(fix.as_str())) || (!*is_prefix && cname.ends_with(fix.as_str())) {
+                                        if constant.kind.is_integer() && ((*is_prefix && cname.starts_with(fix.as_str())) || (!*is_prefix && cname.ends_with(fix.as_str()))) {
                                             Some(v)
                                         } else {
                                             None
