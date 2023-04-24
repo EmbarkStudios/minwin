@@ -165,12 +165,21 @@ impl OutputStream {
             let lib = lib.as_str();
             let cc = if is_system { "system" } else { "C" };
 
-            root.extend(quote! {
-                #[link(name = #lib)]
-                extern #cc {
-                    #ts
-                }
-            });
+            if let Some(lib) = lib.strip_suffix(".dll") {
+                root.extend(quote! {
+                    #[link(name = #lib, kind = "raw-dylib")]
+                    extern #cc {
+                        #ts
+                    }
+                });
+            } else {
+                root.extend(quote! {
+                    #[link(name = #lib, kind = "raw-dylib", modifiers = "+verbatim")]
+                    extern #cc {
+                        #ts
+                    }
+                });
+            }
         }
 
         root
