@@ -63,7 +63,7 @@ pub struct MetadataFiles {
 
 impl MetadataFiles {
     pub fn new() -> anyhow::Result<Self> {
-        let mds = ["Windows", "Windows.Win32", "Windows.Win32.Interop"];
+        let mds = ["Windows", "Windows.Win32", "Windows.Wdk"];
 
         let (md_files, layouts) = rayon::join(
             || {
@@ -386,45 +386,50 @@ impl Resolver {
         let reader = reader::Reader::new(&md.files);
 
         // windows-sys doesn't care about these, so neither do we
-        const EXCLUDED_NAMESPACES: &[&str] = &[
-            "Windows.Win32.AI.MachineLearning",
-            "Windows.Win32.Graphics.CompositionSwapchain",
-            "Windows.Win32.Graphics.Direct2D",
-            "Windows.Win32.Graphics.Direct3D",
-            "Windows.Win32.Graphics.Direct3D10",
-            "Windows.Win32.Graphics.Direct3D11",
-            "Windows.Win32.Graphics.Direct3D11on12",
-            "Windows.Win32.Graphics.Direct3D12",
-            "Windows.Win32.Graphics.Direct3D9",
-            "Windows.Win32.Graphics.Direct3D9on12",
-            "Windows.Win32.Graphics.DirectComposition",
-            "Windows.Win32.Graphics.DirectDraw",
-            "Windows.Win32.Graphics.DirectManipulation",
-            "Windows.Win32.Graphics.DirectWrite",
-            "Windows.Win32.Graphics.DXCore",
-            "Windows.Win32.Graphics.Dxgi",
-            "Windows.Win32.Graphics.Imaging",
-            "Windows.Win32.Interop",
-            "Windows.Win32.Media.Audio.DirectSound",
-            "Windows.Win32.Media.DirectShow",
-            "Windows.Win32.Media.MediaFoundation",
-            "Windows.Win32.Media.PictureAcquisition",
-            "Windows.Win32.System.Diagnostics.Debug.WebApp",
-            "Windows.Win32.System.SideShow",
-            "Windows.Win32.System.TransactionServer",
-            "Windows.Win32.System.WinRT",
-            "Windows.Win32.Web.MsHtml",
-            "Windows.Win32.UI.Xaml",
-        ];
+        // const EXCLUDED_NAMESPACES: &[&str] = &[
+        //     "Windows.Win32.AI.MachineLearning",
+        //     "Windows.Win32.Graphics.CompositionSwapchain",
+        //     "Windows.Win32.Graphics.Direct2D",
+        //     "Windows.Win32.Graphics.Direct3D",
+        //     "Windows.Win32.Graphics.Direct3D10",
+        //     "Windows.Win32.Graphics.Direct3D11",
+        //     "Windows.Win32.Graphics.Direct3D11on12",
+        //     "Windows.Win32.Graphics.Direct3D12",
+        //     "Windows.Win32.Graphics.Direct3D9",
+        //     "Windows.Win32.Graphics.Direct3D9on12",
+        //     "Windows.Win32.Graphics.DirectComposition",
+        //     "Windows.Win32.Graphics.DirectDraw",
+        //     "Windows.Win32.Graphics.DirectManipulation",
+        //     "Windows.Win32.Graphics.DirectWrite",
+        //     "Windows.Win32.Graphics.DXCore",
+        //     "Windows.Win32.Graphics.Dxgi",
+        //     "Windows.Win32.Graphics.Imaging",
+        //     "Windows.Win32.Interop",
+        //     "Windows.Win32.Media.Audio.DirectSound",
+        //     "Windows.Win32.Media.DirectShow",
+        //     "Windows.Win32.Media.MediaFoundation",
+        //     "Windows.Win32.Media.PictureAcquisition",
+        //     "Windows.Win32.System.Diagnostics.Debug.WebApp",
+        //     "Windows.Win32.System.SideShow",
+        //     "Windows.Win32.System.TransactionServer",
+        //     "Windows.Win32.System.WinRT",
+        //     "Windows.Win32.Web.MsHtml",
+        //     "Windows.Win32.UI.Xaml",
+        // ];
 
         let win32 = reader.tree(
             "Windows.Win32",
-            &reader::Filter::new(&["Windows.Win32"], EXCLUDED_NAMESPACES),
+            &reader::Filter::new(&["Windows.Win32"], &[]),
+        );
+
+        let wdk = reader.tree(
+            "Windows.Wdk",
+            &reader::Filter::new(&["Windows.Wdk"], &[]),
         );
 
         let root = reader::Tree {
             namespace: "Windows",
-            nested: BTreeMap::from([("Win32", win32)]),
+            nested: BTreeMap::from([("Win32", win32), ("Wdk", wdk)]),
         };
         let trees = root.flatten();
 
@@ -613,6 +618,12 @@ impl Resolver {
                         || -> anyhow::Result<()> {
                             for method in reader.type_def_methods(def) {
                                 let func_name = reader.method_def_name(method);
+
+                                if func_name.contains('.') {
+                                    tracing::debug!("skipping '{func_name}'");
+                                    continue;
+                                }
+
                                 let s = tracing::debug_span!("get_func", function = func_name);
                                 let _s = s.enter();
                                 let Some(func) = Self::get_func(reader, method).with_context(|| {
@@ -801,12 +812,8 @@ impl Resolver {
         };
 
         let module = {
-            let scope = reader.impl_map_scope(impl_map);
-            // lowercase the name, we want to emit library names that will work
-            // on case sensitive file systems (though the windows sdk has screwed up
-            // names for many libraries with mixed case...)
-            let dname = reader.module_ref_name(scope).to_lowercase();
-            dname.strip_suffix(".dll").unwrap_or(&dname).into()
+            let dname = reader.method_def_module_name(def);
+            dname.into()
         };
 
         let mut params = Vec::new();

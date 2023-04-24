@@ -37,11 +37,7 @@ fn update_winmd(md_dir: &Path) {
     let vcs_info: VcsInfo =
         serde_json::from_str(&vcs_info).expect("failed to deserialize .cargo_vcs_info.json");
 
-    let winmd_files = [
-        "Windows.Win32.Interop.winmd",
-        "Windows.Win32.winmd",
-        "Windows.winmd",
-    ];
+    let winmd_files = ["Windows.Win32.winmd", "Windows.winmd", "Windows.Wdk.winmd"];
 
     let url_root = format!(
         "https://github.com/microsoft/windows-rs/raw/{}/{}/default/",
