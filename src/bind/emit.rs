@@ -9,9 +9,11 @@ use ostream::OutputStream;
 use super::InterfaceMap;
 use proc_macro2::{self as pm, TokenStream};
 use quote::quote;
-use windows_metadata::reader::{Reader, Type, TypeKind, Field};
+use windows_metadata::reader::{self as wmr, Reader, Type, TypeKind, Field};
 
-pub struct Emit {
+pub struct Emit<'r> {
+    /// Used to query the metadata database
+    reader: &'r Reader,
     /// List of interfaces to emit, if an interface/class is not in this list it
     /// is emitted as a void* type alias instead
     ifaces: InterfaceMap,
@@ -31,13 +33,12 @@ pub struct Emit {
 
 impl Emit {
     #[inline]
-    
     fn to_ident(&self, name: &str, kind: IdentKind) -> pm::Ident {
         shared::to_ident(name, kind, self.use_rust_casing, self.fix_naming)
     }
 }
 
-pub fn emit_items(emit: Emit, reader: &Reader, items: super::ItemSet) -> String {
+pub fn emit_items(emit: Emit<'_>, items: super::ItemSet) -> String {
     let mut os = OutputStream::new();
 
     for ty in items.types {

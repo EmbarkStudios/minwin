@@ -1,7 +1,7 @@
 use proc_macro2::{self as pm, TokenStream};
 use quote::{format_ident, quote, ToTokens, TokenStreamExt};
 use std::fmt;
-use windows_metadata::reader as wmr;
+use windows_metadata::reader::{self as wmr, Param, Type};
 
 #[derive(Copy, Clone)]
 pub(super) enum IdentKind<'res> {
@@ -175,16 +175,16 @@ impl ToTokens for Value {
 
 use wmr::GUID;
 
-pub struct Guid {
+pub struct Guid<'r> {
     pub value: GUID,
-    pub use_rust_casing: bool,
+    pub printer: TypePrinter<'r>,
 }
 
-impl ToTokens for Guid {
+impl<'r> ToTokens for Guid<'r> {
     fn to_tokens(&self, ts: &mut TokenStream) {
         let GUID(a, b, c, d, e, f, g, h, i, j, k) = self.value;
-        let gname = if self.use_rust_casing { "Guid" } else { "GUID" };
-        ts.extend(format!("{gname}::from_u128(0x{a:08x?}_{b:04x?}_{c:04x?}_{d:02x?}{e:02x?}_{f:02x?}{g:02x?}{h:02x?}{i:02x?}{j:02x?}{k:02x?})").parse::<TokenStream>().unwrap());
+        ts.append(&self.printer);
+        ts.extend(format!("::from_u128(0x{a:08x?}_{b:04x?}_{c:04x?}_{d:02x?}{e:02x?}_{f:02x?}{g:02x?}{h:02x?}{i:02x?}{j:02x?}{k:02x?})").parse::<TokenStream>().unwrap());
     }
 }
 
@@ -192,11 +192,59 @@ pub struct TypePrinter<'r> {
     r: &'r wmr::Reader<'r>,
     ty: wmr::Type,
     use_rust_casing: bool,
+    use_windows_core: bool,
+}
+
+impl<'r> TypePrinter<'r> {
+    #[inline]
+    fn core_type(&self, name: &'static str) -> &'static str {
+        const CORE_TYPES: &[(&'static str, &'static str)] = &[
+            ("::windows_core::BSTR", "Bstr"),
+            ("::windows_core::Guid", "Guid"),
+            ("::windows_core::HRESULT", "HResult"),
+            ("::windows_core::PCSTR", "PCStr"),
+            ("::windows_core::PCWSTR", "PCWstr"),
+            ("::windows_core::PSTR", "PStr"),
+            ("::windows_core::PWSTR", "PWstr"),
+        ];
+
+        if !self.use_windows_core && !self.use_rust_casing {
+            name
+        } else {
+            CORE_TYPES
+                .iter()
+                .find_map(|(n, g)| {
+                    let us = &n[16..];
+                    (us == name).then_some(if self.use_windows_core { n } else { g })
+                })
+                .expect("unknown core type")
+        }
+    }
+
+    #[inline]
+    fn wrap(&self, ty: Type) -> Self {
+        Self {
+            r: self.r,
+            ty,
+            use_rust_casing: self.use_rust_casing,
+            use_windows_core: self.use_rust_casing,
+        }
+    }
+}
+
+struct Ptrs(usize, bool);
+
+impl ToTokens for Ptrs {
+    fn to_tokens(&self, ts: &mut TokenStream) {
+        let tok = if self.1 { "*mut " } else { "*const " };
+        for _ in 0..self.0 {
+            ts.append(tok);
+        }
+    }
 }
 
 impl<'r> ToTokens for TypePrinter<'r> {
     fn to_tokens(&self, ts: &mut TokenStream) {
-        use wmr::Type;
         let ty_name = match self.ty {
             Type::U32 => "u32",
             Type::I32 => "i32",
@@ -209,31 +257,231 @@ impl<'r> ToTokens for TypePrinter<'r> {
             Type::F32 => "f32",
             Type::F64 => "f64",
             Type::Void => "::core::ffi::c_void",
-            Type::BSTR => {
-                if self.use_rust_casing {
-                    "Bstr"
+            Type::ISize => "isize",
+            Type::USize => "usize",
+            Type::Char => "u16",
+            Type::PCSTR => self.core_type("PCSTR"),
+            Type::PCWSTR => self.core_type("PCWSTR"),
+            Type::PSTR => self.core_type("PSTR"),
+            Type::PWSTR => self.core_type("PWSTR"),
+            Type::BSTR => self.core_type("BSTR"),
+            Type::String => panic!("can't resolve unless format of string is known"),
+            Type::HRESULT => self.core_type("HRESULT"),
+            Type::GUID => self.core_type("GUID"),
+            Type::IUnknown => {
+                if self.use_windows_core {
+                    "::windows_core::IUnknown"
                 } else {
-                    "BSTR"
+                    "IUnknown"
                 }
             }
-            Type::GUID => {
-                if self.use_rust_casing {
-                    "Guid"
+            Type::IInspectable => {
+                if self.use_windows_core {
+                    "::windows_core::IInspectable"
                 } else {
-                    "GUID"
+                    "IInspectable"
                 }
             }
-            Type::HRESULT => Ok(self.to_ident("HRESULT", IdentKind::Type)),
-            Type::String => anyhow::bail!("can't resolve unless format of string is known"),
+            Type::Win32Array((ty, len)) => {
+                let element = self.wrap(*ty);
+                let len = pm::Literal::usize_unsuffixed(len);
+
+                ts.extend(quote! { [#element; #len] });
+                return;
+            }
+            Type::TypeDef((def, generics)) => {
+                let name = self.r.type_def_name(def);
+
+                if !self.use_rust_casing {
+                    name
+                } else {
+                    use wmr::TypeKind;
+                    let kind = match self.r.type_def_kind(def) {
+                        TypeKind::Struct | TypeKind::Class | TypeKind::Interface => {
+                            IdentKind::Record
+                        }
+                        TypeKind::Delegate => IdentKind::FunctionPointer,
+                        TypeKind::Enum => IdentKind::Enum,
+                    };
+
+                    let ident = to_ident(name, kind, self.use_rust_casing, false);
+                    ts.append(ident);
+                    return;
+                }
+            }
+            Type::MutPtr((ty, pointers)) => {
+                let ptrs = Ptrs((pointers, true));
+                let element = self.wrap(*ty);
+
+                ts.extend(quote! { #ptrs #element });
+                return;
+            }
+            Type::ConstPtr((ty, pointers)) => {
+                let ptrs = Ptrs((pointers, false));
+                let element = self.wrap(*ty);
+
+                ts.extend(quote! { #ptrs #element });
+                return;
+            }
+            Type::GenericParam(generic) => {
+                panic!(
+                    "generic parameter '{}' is not supported",
+                    self.r.generic_param_name(generic)
+                );
+            }
+            Type::WinrtArray(_) | Type::WinrtArrayRef(_) | Type::WinrtConstRef(_) => {
+                panic!("WinRT type is not supported");
+            }
             // Sigh, used by JS :(
             Type::Bool => "bool",
+            Type::TypeName => unreachable!("this should never happen..."),
         };
 
-        ts.extend(quote::quote! { #ty_name });
+        ts.append(quote::format_ident!("{ty_name}"));
     }
 }
 
-impl super::Emit {
+struct ParamsPrinter<'r, 's> {
+    sig: &'s wmr::Signature,
+    r: &'r wmr::Reader<'r>,
+    use_rust_casing: bool,
+    use_windows_core: bool,
+    fix_naming: bool,
+}
+
+impl<'r, 's> ToTokens for ParamsPrinter<'r, 's> {
+    fn to_tokens(&self, ts: &mut TokenStream) {
+        let piter = self.sig.params.iter().map(|param| {
+            let pname = to_ident(
+                self.r.param_name(param.def),
+                IdentKind::Param,
+                self.use_rust_casing,
+                self.fix_naming,
+            );
+            let ty = TypePrinter {
+                ty: param.ty,
+                r: self.r,
+                use_rust_casing: self.use_rust_casing,
+                use_windows_core: self.use_windows_core,
+            };
+
+            quote! { #pname: #ty }
+        });
+
+        ts.append_separated(piter, ", ");
+    }
+}
+
+bitflags::bitflags! {
+    #[derive(Debug, Copy, Clone)]
+    pub struct Attrs: u8 {
+        const X86 = 1 << 0;
+        const X86_64 = 1 << 1;
+        const AARCH64 = 1 << 2;
+
+        const COPY_CLONE = 1 << 3;
+        const UNION = 1 << 4;
+        const DEPRECATED = 1 << 5;
+
+        const ARCH = Attrs::X86.bits() | Attrs::X86_64.bits() | Attrs::AARCH64.bits();
+    }
+}
+
+impl ToTokens for Attrs {
+    fn to_tokens(&self, ts: &mut TokenStream) {
+        let arch = self.intersection(Attrs::ARCH);
+
+        if arch.is_empty() {
+            return;
+        }
+
+        let count = arch.iter().count();
+        let arches = arch.iter().map(|a| {
+            if a.contains(Attrs::X86) {
+                "x86"
+            } else if a.contains(Attrs::X86_64) {
+                "x86_64"
+            } else if a.contains(Attrs::AARCH64) {
+                "aarch64"
+            } else {
+                unreachable!()
+            }
+        });
+
+        let cfg_parts = if count == 1 {
+            quote! { #(target_arch = #arches),* }
+        } else {
+            quote! { any(#(target_arch = #arches),*) }
+        };
+
+        ts.extend(cfg_parts);
+    }
+}
+
+impl<'r> super::Emit<'r> {
     #[inline]
-    fn type_print<'r>(&self, ty: Type, reader: &'r Reader) -> TypePrinter<'r> {}
+    pub(crate) fn type_printer(&self, ty: Type) -> TypePrinter<'r> {
+        TypePrinter {
+            r: self.reader,
+            ty,
+            use_rust_casing: self.use_rust_casing,
+            use_windows_core: self.use_core,
+        }
+    }
+
+    #[inline]
+    pub(crate) fn guid_printer(&self, guid: GUID) -> Guid<'r> {
+        Guid {
+            value: guid,
+            printer: TypePrinter {
+                r: self.reader,
+                ty: Type::GUID,
+                use_rust_casing: self.use_rust_casing,
+                use_windows_core: self.use_core,
+            },
+        }
+    }
+
+    #[inline]
+    pub(crate) fn param_printer<'s>(&self, sig: &'s wmr::Signature) -> ParamsPrinter<'r, 's> {
+        ParamsPrinter {
+            sig,
+            r: self.reader,
+            use_rust_casing: self.use_rust_casing,
+            use_windows_core: self.use_core,
+            fix_naming: self.fix_naming,
+        }
+    }
+
+    #[inline]
+    pub(crate) fn attributes(&self, attributes: impl Iterator<Item = wmr::Attribute>) -> Attrs {
+        let reader = self.reader;
+        let mut attrs = Attrs::empty();
+
+        for attr in attributes {
+            match reader.attribute_name(attr) {
+                "SupportedArchitectureAttribute" => {
+                    if let Some((_, wmr::Value::Enum(_, wmr::Integer::I32(value)))) =
+                        reader.attribute_args(attr).get(0)
+                    {
+                        if value & 1 != 0 {
+                            attrs.insert(Attrs::X86);
+                        }
+                        if value & 2 != 0 {
+                            attrs.insert(Attrs::X86_64);
+                        }
+                        if value & 4 != 0 {
+                            attrs.insert(Attrs::AARCH64);
+                        }
+                    }
+                }
+                "DeprecatedAttribute" => {
+                    attrs.insert(Attrs::DEPRECATED);
+                }
+                _ => {}
+            }
+        }
+
+        attrs
+    }
 }

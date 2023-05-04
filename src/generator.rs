@@ -8,33 +8,6 @@ use proc_macro2::{self as pm, TokenStream};
 use quote::{format_ident, quote, ToTokens, TokenStreamExt};
 use ustr::{Ustr, UstrMap};
 
-impl ToTokens for Attrs {
-    fn to_tokens(&self, ts: &mut TokenStream) {
-        let arch = self.intersection(Attrs::ARCH);
-
-        let count = arch.iter().count();
-        let arches = arch.iter().map(|a| {
-            if a.contains(Attrs::X86) {
-                "x86"
-            } else if a.contains(Attrs::X86_64) {
-                "x86_64"
-            } else if a.contains(Attrs::AARCH64) {
-                "aarch64"
-            } else {
-                unreachable!()
-            }
-        });
-
-        let cfg_parts = if count == 1 {
-            quote! { #(target_arch = #arches),* }
-        } else {
-            quote! { any(#(target_arch = #arches),*) }
-        };
-
-        ts.extend(cfg_parts);
-    }
-}
-
 impl ToTokens for Layout {
     fn to_tokens(&self, ts: &mut TokenStream) {
         let repr = match self {

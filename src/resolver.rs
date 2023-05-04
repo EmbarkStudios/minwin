@@ -235,21 +235,6 @@ pub enum Layout {
     Align(u8),
 }
 
-bitflags::bitflags! {
-    #[derive(Debug, Copy, Clone)]
-    pub struct Attrs: u8 {
-        const X86 = 1 << 0;
-        const X86_64 = 1 << 1;
-        const AARCH64 = 1 << 2;
-
-        const COPY_CLONE = 1 << 3;
-        const UNION = 1 << 4;
-        const DEPRECATED = 1 << 5;
-
-        const ARCH = Attrs::X86.bits() | Attrs::X86_64.bits() | Attrs::AARCH64.bits();
-    }
-}
-
 #[derive(Debug)]
 pub enum RecordLayout {
     None,
@@ -1047,36 +1032,4 @@ impl Resolver {
         }))
     }
 
-    fn get_attrs(
-        reader: &Reader<'_>,
-        attributes: impl Iterator<Item = reader::Attribute>,
-    ) -> Attrs {
-        let mut attrs = Attrs::empty();
-
-        for attr in attributes {
-            match reader.attribute_name(attr) {
-                "SupportedArchitectureAttribute" => {
-                    if let Some((_, reader::Value::Enum(_, reader::Integer::I32(value)))) =
-                        reader.attribute_args(attr).get(0)
-                    {
-                        if value & 1 != 0 {
-                            attrs.insert(Attrs::X86);
-                        }
-                        if value & 2 != 0 {
-                            attrs.insert(Attrs::X86_64);
-                        }
-                        if value & 4 != 0 {
-                            attrs.insert(Attrs::AARCH64);
-                        }
-                    }
-                }
-                "DeprecatedAttribute" => {
-                    attrs.insert(Attrs::DEPRECATED);
-                }
-                _ => {}
-            }
-        }
-
-        attrs
-    }
 }

@@ -1,12 +1,8 @@
 use super::*;
 
-impl super::Emit {
-    fn emit_constant(
-        &self,
-        os: &mut OutputStream,
-        reader: &Reader,
-        def: Field,
-    ) -> anyhow::Result<()> {
+impl<'r> super::Emit<'r> {
+    fn emit_constant(&self, os: &mut OutputStream, def: Field) -> anyhow::Result<()> {
+        let reader = self.reader;
         let name = self.to_ident(reader.field_name(def), IdentKind::Variant(None));
         let ty = reader.field_type(def, None).to_const_type();
 
@@ -18,7 +14,7 @@ impl super::Emit {
             };
 
             if ty == constant_type {
-                let typename = self.type_name(constant_type, reader);
+                let typename = self.type_printer(constant_type);
 
                 Some(quote! {
                     pub const #name: #typename = #value;
@@ -26,19 +22,15 @@ impl super::Emit {
             } else {
                 let Type::TypeDef((def, _)) = ty else { anyhow::bail!("constant '{name}' is not a typedef...") };
 
-                let ts = os.get_enum_block(def, reader);
+                let ts = os.get_enum_block(def, self);
                 ts.extend(quote! {
                     pub const #name: Enum = #value;
                 });
                 None
             }
         } else if let Some(value) = reader.field_guid(def) {
-            let val = Guid {
-                value,
-                use_rust_casing: self.use_rust_casing,
-            };
-
-            let guid_ty = self.to_ident("GUID", IdentKind::Record);
+            let val = self.guid_printer(value);
+            let guid_ty = self.type_printer(Type::GUID);
 
             Some(quote! {
                 pub const #name: #guid_ty = #val;

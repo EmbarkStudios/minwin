@@ -2,7 +2,7 @@ use proc_macro2::{self as pm, TokenStream};
 use quote::{format_ident, quote, ToTokens};
 use std::collections::BTreeMap;
 use ustr::Ustr;
-use windows_metadata::reader::{Field, Reader, Type, TypeDef};
+use windows_metadata::reader::{Field, MethodDef, Reader, Type, TypeDef};
 
 bitflags::bitflags! {
     #[derive(Debug, Copy, Clone)]
@@ -53,6 +53,7 @@ pub struct OutputStream {
     enums: BTreeMap<TypeDef, TokenStream>,
     constants: BTreeMap<Field, (pm::Ident, TokenStream)>,
     types: BTreeMap<Type, (pm::Ident, Option<TokenStream>)>,
+    functions: BTreeMap<Ustr, Vec<(MethodDef, TokenStream)>>,
 }
 
 impl OutputStream {
@@ -64,6 +65,7 @@ impl OutputStream {
             enums: BTreeMap::new(),
             constants: BTreeMap::new(),
             types: BTreeMap::new(),
+            functions: BTreeMap::new(),
         }
     }
 
@@ -109,20 +111,20 @@ impl OutputStream {
         }
     }
 
-    pub fn get_extern_block(&mut self, name: &Ustr, is_system: bool) -> &mut TokenStream {
-        let eb = if let Some(eb) = self
-            .libs
-            .iter()
-            .position(|(lname, is, _ts)| name == lname && is_system == *is)
-        {
-            eb
-        } else {
-            self.libs.push((*name, is_system, TokenStream::new()));
-            self.libs.len() - 1
-        };
+    // pub fn get_extern_block(&mut self, name: Ustr, is_system: bool) -> &mut TokenStream {
+    //     let eb = if let Some(eb) = self
+    //         .libs
+    //         .iter()
+    //         .position(|(lname, is, _ts)| name == lname && is_system == *is)
+    //     {
+    //         eb
+    //     } else {
+    //         self.libs.push((*name, is_system, TokenStream::new()));
+    //         self.libs.len() - 1
+    //     };
 
-        &mut self.libs[eb].2
-    }
+    //     &mut self.libs[eb].2
+    // }
 
     /// When outputting actual enums, we wrap them in a module, so that the
     /// constants are accessible similarly to a regular Rust enum, but still
@@ -136,9 +138,9 @@ impl OutputStream {
     /// }
     /// ```
     #[inline]
-    pub fn get_enum_block(&mut self, def: TypeDef, reader: &Reader) -> &mut TokenStream {
+    pub fn get_enum_block(&mut self, def: TypeDef, emit: &super::Emit<'_>) -> &mut TokenStream {
         self.enums.entry(def).or_insert_with(|| {
-            reader.type_def_underlying_type(row)
+            let kind = emit.type_printer(emit.reader.type_def_underlying_type(def));
 
             quote! {
                 pub type Enum = #kind;
@@ -154,6 +156,11 @@ impl OutputStream {
     #[inline]
     pub fn insert_constant(&mut self, field: Field, ident: pm::Ident, ts: TokenStream) {
         self.constants.insert(field, (ident, ts));
+    }
+
+    #[inline]
+    pub fn insert_function(&mut self, library: Ustr, func: MethodDef, ts: TokenStream) {
+        self.functions.entry(library).or_default().push((func, ts));
     }
 
     pub fn finalize(self, use_windows_targets: bool) -> TokenStream {
