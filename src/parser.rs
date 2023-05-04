@@ -212,6 +212,7 @@ impl BindingFile {
 
         use anyhow::Context as _;
         let mut child = std::process::Command::new("rustfmt")
+            .args(["--edition", "2021"])
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())

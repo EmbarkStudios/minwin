@@ -10,6 +10,8 @@ camino = "1.1"
 cargo_metadata = "0.15"
 clap = { version = "4.0", features = ["derive"] }
 heck = "0.4"
+nu-ansi-term = "0.47"
+prettyplease = "0.2"
 proc-macro2 = "1.0"
 quote = "1.0"
 rayon = "1.5"
@@ -21,8 +23,9 @@ syn = { version = "2.0", default-features = false, features = [
     "full",
     "parsing",
     "printing",
-    #"span-locations",
 ] }
+# toml parsing
+toml = "0.7"
 # Tracing logs
 tracing = { version = "0.1", default-features = false, features = [
     "attributes",
@@ -40,8 +43,11 @@ walkdir = "2.3"
 # When bumping versions, run `cargo run --manifest-path update/Cargo.toml` to
 # get the winmd files that match the publish commit
 windows-metadata = "0.49"
-windows-bindgen = "0.49"
 zstd = "0.12"
 
 [dev-dependencies]
 insta = "1.28"
+
+[patch.crates-io]
+#windows-metadata = { git = "https://github.com/EmbarkStudios/windows-rs", branch = "fixup-standalone" }
+#windows-metadata = { path = "../windows-rs/crates/libs/metadata" }

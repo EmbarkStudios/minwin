@@ -6,7 +6,7 @@ use crate::{
 use anyhow::Context as _;
 use proc_macro2::{self as pm, TokenStream};
 use quote::{format_ident, quote, ToTokens, TokenStreamExt};
-use ustr::{Ustr, UstrMap, UstrSet};
+use ustr::{Ustr, UstrMap};
 
 impl ToTokens for Attrs {
     fn to_tokens(&self, ts: &mut TokenStream) {
