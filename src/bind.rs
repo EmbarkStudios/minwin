@@ -1,7 +1,7 @@
 mod emit;
 mod gather;
 
-use gather::Disambiguate;
+pub use gather::{Disambiguate, Impls, Item};
 
 use anyhow::Context as _;
 use rayon::prelude::*;
@@ -12,33 +12,18 @@ pub type InterfaceMap = std::collections::BTreeMap<String, BTreeSet<String>>;
 /// All of the unique items gathered based on a root list of names
 pub struct ItemSet {
     /// Set of structs, unions, interfaces, classes, enums, type aliases, and function pointers
-    pub types: BTreeSet<wmr::Type>,
+    pub types: BTreeMap<wmr::Type, Impls>,
     /// Set of functions
     pub functions: BTreeSet<wmr::MethodDef>,
     /// Set of constants, including individual enum values
     pub constants: BTreeSet<wmr::Field>,
 }
 
-fn qualify_item(reader: &wmr::Reader, bname: String) -> Option<(String, Option<Disambiguate>)> {
-    let (bname, mut dis) = if let Some(i) = bname.find('-') {
-        let stripped = bname[i + 1..].to_owned();
-        let dis = match &bname[..i] {
-            "constant" => Some(Disambiguate::Constant),
-            "function" => Some(Disambiguate::Function),
-            "record" => Some(Disambiguate::Record),
-            unknown => {
-                tracing::warn!("unknown disambiguation prefix '{unknown}' for {stripped}");
-                None
-            }
-        };
-
-        (stripped, dis)
-    } else {
-        (bname, None)
-    };
+fn qualify_item(reader: &wmr::Reader, bname: String) -> anyhow::Result<(String, Item)> {
+    let (mut item, bname) = Item::parse(bname)?;
 
     if bname.starts_with("Windows.") {
-        Some((bname, dis))
+        Ok((bname, item))
     } else {
         for ns in reader.namespaces() {
             // We could cheat and take casing into account, but there
@@ -48,21 +33,21 @@ fn qualify_item(reader: &wmr::Reader, bname: String) -> Option<(String, Option<D
             // We _do_ consider which items are most likely to be bound,
             // namely functions -> constants/enums -> records
             let mut find = || {
-                if matches!(dis, None | Some(Disambiguate::Function))
+                if matches!(item.dis, Disambiguate::Any | Disambiguate::Function)
                     && reader
                         .namespace_functions(ns)
                         .any(|f| reader.method_def_name(f) == bname)
                 {
-                    dis = Some(Disambiguate::Function);
+                    item.dis = Disambiguate::Function;
                     return true;
                 }
 
-                if matches!(dis, None | Some(Disambiguate::Constant))
+                if matches!(item.dis, Disambiguate::Any | Disambiguate::Constant)
                     && reader
                         .namespace_constants(ns)
                         .any(|c| reader.field_name(c) == bname)
                 {
-                    dis = Some(Disambiguate::Constant);
+                    item.dis = Disambiguate::Constant;
                     return true;
                 }
 
@@ -72,7 +57,7 @@ fn qualify_item(reader: &wmr::Reader, bname: String) -> Option<(String, Option<D
                             .type_def_fields(td)
                             .any(|f| reader.field_name(f) == bname)
                         {
-                            dis = Some(Disambiguate::Constant);
+                            item.dis = Disambiguate::Constant;
                             return true;
                         }
                     } else if reader.type_def_name(td) == bname {
@@ -86,23 +71,22 @@ fn qualify_item(reader: &wmr::Reader, bname: String) -> Option<(String, Option<D
             if find() {
                 let qualified = format!("{ns}.{bname}");
                 tracing::debug!("resolved {bname} => {qualified}");
-                return Some((qualified, dis));
+                return Ok((qualified, item));
             }
         }
 
-        tracing::warn!("unable to resolve '{bname}'");
-        None
+        anyhow::bail!("unable to resolve '{bname}'");
     }
 }
 
 pub fn qualify_items(
     reader: &wmr::Reader,
     items: Vec<String>,
-) -> Vec<(String, Option<Disambiguate>)> {
+) -> anyhow::Result<Vec<(String, Item)>> {
     // Allow the user to specify simple or fully qualified names
     items
         .into_par_iter()
-        .filter_map(|bname| qualify_item(reader, bname))
+        .map(|bname| qualify_item(reader, bname))
         .collect()
 }
 
@@ -156,18 +140,18 @@ pub fn bind(
     let files = &wmr::File::with_default(&[]).unwrap();
     let reader = &wmr::Reader::new(files);
 
-    let names = qualify_items(reader, items);
-    let ifaces: BTreeMap<_, _> = interfaces
+    let names = qualify_items(reader, items)?;
+    let ifaces = interfaces
         .into_par_iter()
-        .filter_map(|(name, methods)| qualify_item(reader, name).map(|(name, _)| (name, methods)))
-        .collect();
+        .map(|(name, methods)| qualify_item(reader, name).map(|(name, _)| (name, methods)))
+        .collect::<anyhow::Result<BTreeMap<_, _>>>()?;
 
     anyhow::ensure!(
-        !names.is_empty() || !interfaces.is_empty(),
+        !names.is_empty() || !ifaces.is_empty(),
         "unable to locate any items to bind"
     );
 
-    let items = gather::gather_items(reader, &ifaces, names.iter().map(|(s, d)| (s.as_str(), *d)));
+    let items = gather::gather_items(reader, &ifaces, names.iter().map(|(n, i)| (n.as_str(), *i)));
 
     // Gather stats now that we have all of the items we want to emit
     let mut ns_items = BTreeMap::<String, Items>::new();
@@ -282,7 +266,7 @@ pub fn bind(
         items.constants.inc();
     }
 
-    for ty in &items.types {
+    for ty in items.types.keys() {
         // Just ignore the core types, they're not a big deal
         let wmr::Type::TypeDef((td, _)) = &ty else { continue; };
         let td = *td;
@@ -316,8 +300,10 @@ pub fn bind(
     }
 
     let emit = emit::Emit {
+        items,
         reader,
         ifaces,
+        layouts: Some(emit::load_clang_layouts()),
         link_targets: false,
         use_core: false,
         fix_naming: false,
@@ -325,7 +311,7 @@ pub fn bind(
         pretty_print: true,
     };
 
-    let bindings = emit::emit_items(emit, items);
+    let bindings = emit.emit()?;
 
     Ok((bindings, ns_items))
 }

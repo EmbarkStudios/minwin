@@ -1,8 +1,22 @@
 use super::{InterfaceMap, ItemSet};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use windows_metadata::reader::{self, Reader, Type, TypeDef, TypeKind};
 
-pub fn collect(reader: &Reader, interfaces: &InterfaceMap, ty: &Type, set: &mut BTreeSet<Type>) {
+pub fn collect(
+    reader: &Reader,
+    interfaces: &InterfaceMap,
+    ty: &Type,
+    mut ri: Impls,
+    set: &mut BTreeMap<Type, Impls>,
+) {
+    if let Type::TypeDef((def, _)) = ty {
+        if !matches!(reader.type_def_kind(*def), TypeKind::Struct) {
+            ri = Impls::empty();
+        }
+    } else {
+        ri = Impls::empty();
+    }
+
     // Get the underlying type, the pointers are irrelevant
     let ty = match ty {
         Type::MutPtr((ty, _)) => &ty,
@@ -14,15 +28,17 @@ pub fn collect(reader: &Reader, interfaces: &InterfaceMap, ty: &Type, set: &mut 
         _ => ty,
     };
 
-    if !set.insert(ty.clone()) {
+    if set.contains_key(ty) {
         return;
     }
+
+    set.insert(ty.clone(), ri);
 
     let Type::TypeDef((def, generics)) = ty else { return; };
     let def = *def;
 
     for generic in generics {
-        collect(reader, interfaces, &generic, set);
+        collect(reader, interfaces, &generic, ri, set);
     }
 
     for field in reader.type_def_fields(def) {
@@ -32,7 +48,7 @@ pub fn collect(reader: &Reader, interfaces: &InterfaceMap, ty: &Type, set: &mut 
                 continue;
             }
         }
-        collect(reader, interfaces, &ty, set);
+        collect(reader, interfaces, &ty, ri, set);
     }
 
     let kind = reader.type_def_kind(def);
@@ -61,35 +77,36 @@ pub fn collect(reader: &Reader, interfaces: &InterfaceMap, ty: &Type, set: &mut 
 
         let sig = reader.method_def_signature(method, generics);
         if let Some(rt) = &sig.return_type {
-            collect(reader, interfaces, rt, set);
+            collect(reader, interfaces, rt, ri, set);
         }
         for param in &sig.params {
-            collect(reader, interfaces, &param.ty, set);
+            collect(reader, interfaces, &param.ty, ri, set);
         }
     }
 
     for interface in reader.type_interfaces(&ty) {
-        collect(reader, interfaces, &interface.ty, set);
+        collect(reader, interfaces, &interface.ty, ri, set);
     }
 
     if kind == TypeKind::Struct
         && reader.type_def_fields(def).next().is_none()
         && reader.type_def_guid(def).is_some()
     {
-        set.insert(Type::GUID);
+        set.insert(Type::GUID, Impls::empty());
     }
 
-    collect_nested(reader, interfaces, def, set);
+    collect_nested(reader, interfaces, def, ri, set);
 }
 
 fn collect_nested(
     reader: &Reader,
     interfaces: &InterfaceMap,
     td: TypeDef,
-    set: &mut BTreeSet<Type>,
+    ri: Impls,
+    set: &mut BTreeMap<Type, Impls>,
 ) {
     for nested in reader.nested_types(td) {
-        collect_nested(reader, interfaces, nested, set);
+        collect_nested(reader, interfaces, nested, ri, set);
 
         for field in reader.type_def_fields(nested) {
             let ty = reader.field_type(field, Some(nested));
@@ -100,7 +117,7 @@ fn collect_nested(
                     continue;
                 }
 
-                collect(reader, interfaces, &ty, set);
+                collect(reader, interfaces, &ty, ri, set);
             }
         }
     }
@@ -113,7 +130,7 @@ fn collect_nested(
 /// items with the exact same name can be located within the same namespace,
 /// which can cause the incorrect item to be emitted and the desired item to be
 /// skipped.
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub enum Disambiguate {
     /// The item is a constant or enum variant
     Constant,
@@ -121,32 +138,114 @@ pub enum Disambiguate {
     Function,
     /// The item is a struct or union
     Record,
+    #[default]
+    Any,
+}
+
+bitflags::bitflags! {
+    /// Decides additional implementations that are derived for the struct
+    ///
+    /// `windows-bindgen` unconditionally emits `Copy` and `Clone` for all records,
+    /// but this increases compile times for:
+    ///
+    /// * No benefit because they are only ever moved
+    /// * Worse, extremely large types are accidentally copied when normally the
+    /// user would be given an error that it's been moved when doing trivial
+    /// operations like accessing a single field etc.
+    #[derive(Debug, Copy, Clone, Default)]
+    pub struct Impls: u8 {
+        const COPY = 1 << 0 | Impls::CLONE.bits();
+        const CLONE = 1 << 1;
+    }
+}
+
+#[derive(Default, Copy, Clone)]
+pub struct Item {
+    pub dis: Disambiguate,
+    pub ri: Impls,
+}
+
+impl Item {
+    pub(super) fn parse(bname: String) -> anyhow::Result<(Self, String)> {
+        match (bname.find('-'), bname.find('+')) {
+            (None, None) => Ok((Self::default(), bname)),
+            (Some(_), Some(_)) => {
+                anyhow::bail!("'{bname}' has both a disambiguation and record implementation, you can just specify the impl if you want a record");
+            }
+            (Some(i), None) => {
+                let dis = match &bname[..i] {
+                    "constant" => Disambiguate::Constant,
+                    "function" => Disambiguate::Function,
+                    "record" => Disambiguate::Record,
+                    unknown => {
+                        anyhow::bail!("unknown disambiguation prefix '{unknown}' for {bname}");
+                    }
+                };
+
+                let stripped = bname[i + 1..].to_owned();
+
+                Ok((
+                    Self {
+                        dis,
+                        ..Default::default()
+                    },
+                    stripped,
+                ))
+            }
+            (None, Some(i)) => {
+                let mut ri = Impls::empty();
+
+                for imp in bname[i + 1..].split('+') {
+                    let ri = match imp {
+                        "Copy" => ri.insert(Impls::COPY),
+                        "Clone" => ri.insert(Impls::CLONE),
+                        unknown => {
+                            anyhow::bail!("unknown record impl '{unknown}' for {bname}");
+                        }
+                    };
+                }
+
+                let stripped = bname[..i].to_owned();
+
+                Ok((
+                    Self {
+                        ri,
+                        ..Default::default()
+                    },
+                    stripped,
+                ))
+            }
+        }
+    }
 }
 
 /// Takes a list of fully qualified type names and recursively gathers all of
 /// the items needed to fully define them.
 pub fn gather_items<'names>(
     reader: &Reader,
-    interfaces: &InterfaceMap,
-    names: impl Iterator<Item = (&'names str, Option<Disambiguate>)>,
+    interfaces: &'names InterfaceMap,
+    names: impl Iterator<Item = (&'names str, Item)>,
 ) -> ItemSet {
-    let mut types = BTreeSet::new();
+    let mut types = BTreeMap::new();
     let mut functions = BTreeSet::new();
     let mut constants = BTreeSet::new();
 
-    for (name, dis) in names.chain(interfaces.keys().map(|iname| (iname.as_str(), None))) {
+    for (name, item) in names.chain(
+        interfaces
+            .keys()
+            .map(|iname| (iname.as_str(), Default::default())),
+    ) {
         let type_name = reader::TypeName::parse(name);
 
-        // We can't simply use `if let` here to find the types and functions as there may be multiple definitions
-        // to cover multi-arch support.
         let mut found = false;
 
-        if matches!(dis, None | Some(Disambiguate::Record)) {
+        if matches!(item.dis, Disambiguate::Any | Disambiguate::Record) {
             for def in reader.get(type_name) {
                 collect(
                     reader,
                     interfaces,
                     &Type::TypeDef((def, vec![])),
+                    item.ri,
                     &mut types,
                 );
                 found = true;
@@ -157,7 +256,7 @@ pub fn gather_items<'names>(
             continue;
         }
 
-        if matches!(dis, None | Some(Disambiguate::Function)) {
+        if matches!(item.dis, Disambiguate::Any | Disambiguate::Function) {
             for method in reader
                 .namespace_functions(type_name.namespace)
                 .filter(|method| reader.method_def_name(*method) == type_name.name)
@@ -167,16 +266,15 @@ pub fn gather_items<'names>(
                 signature
                     .return_type
                     .iter()
-                    .for_each(|ty| collect(reader, interfaces, ty, &mut types));
-                signature
-                    .params
-                    .iter()
-                    .for_each(|param| collect(reader, interfaces, &param.ty, &mut types));
+                    .for_each(|ty| collect(reader, interfaces, ty, Impls::empty(), &mut types));
+                signature.params.iter().for_each(|param| {
+                    collect(reader, interfaces, &param.ty, Impls::empty(), &mut types)
+                });
                 found = true;
             }
         }
 
-        if found || !matches!(dis, None | Some(Disambiguate::Constant)) {
+        if found || !matches!(item.dis, Disambiguate::Any | Disambiguate::Constant) {
             continue;
         }
 
@@ -189,6 +287,7 @@ pub fn gather_items<'names>(
                 reader,
                 interfaces,
                 &reader.field_type(field, None),
+                Impls::empty(),
                 &mut types,
             );
         }
@@ -209,6 +308,7 @@ pub fn gather_items<'names>(
                 reader,
                 interfaces,
                 &reader.field_type(field, None),
+                Impls::empty(),
                 &mut types,
             );
         }

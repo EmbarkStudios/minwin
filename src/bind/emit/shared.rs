@@ -1,3 +1,4 @@
+use crate::bind::Impls;
 use pm::Ident;
 use proc_macro2::{self as pm, TokenStream};
 use quote::{format_ident, quote, ToTokens, TokenStreamExt};
@@ -246,7 +247,7 @@ impl ToTokens for Ptrs {
 
 impl<'r> ToTokens for TypePrinter<'r> {
     fn to_tokens(&self, ts: &mut TokenStream) {
-        let ty_name = match self.ty {
+        let ty_name = match &self.ty {
             Type::U32 => "u32",
             Type::I32 => "i32",
             Type::U16 => "u16",
@@ -284,20 +285,20 @@ impl<'r> ToTokens for TypePrinter<'r> {
                 }
             }
             Type::Win32Array((ty, len)) => {
-                let element = self.wrap(*ty);
-                let len = pm::Literal::usize_unsuffixed(len);
+                let element = self.wrap(*ty.clone());
+                let len = pm::Literal::usize_unsuffixed(*len);
 
                 ts.extend(quote! { [#element; #len] });
                 return;
             }
-            Type::TypeDef((def, generics)) => {
-                let name = self.r.type_def_name(def);
+            Type::TypeDef((def, _generics)) => {
+                let name = self.r.type_def_name(*def);
 
                 if !self.use_rust_casing {
                     name
                 } else {
                     use wmr::TypeKind;
-                    let kind = match self.r.type_def_kind(def) {
+                    let kind = match self.r.type_def_kind(*def) {
                         TypeKind::Struct | TypeKind::Class | TypeKind::Interface => {
                             IdentKind::Record
                         }
@@ -311,15 +312,15 @@ impl<'r> ToTokens for TypePrinter<'r> {
                 }
             }
             Type::MutPtr((ty, pointers)) => {
-                let ptrs = Ptrs(pointers, true);
-                let element = self.wrap(*ty);
+                let ptrs = Ptrs(*pointers, true);
+                let element = self.wrap(*ty.clone());
 
                 ts.extend(quote! { #ptrs #element });
                 return;
             }
             Type::ConstPtr((ty, pointers)) => {
-                let ptrs = Ptrs(pointers, false);
-                let element = self.wrap(*ty);
+                let ptrs = Ptrs(*pointers, false);
+                let element = self.wrap(*ty.clone());
 
                 ts.extend(quote! { #ptrs #element });
                 return;
@@ -327,7 +328,7 @@ impl<'r> ToTokens for TypePrinter<'r> {
             Type::GenericParam(generic) => {
                 panic!(
                     "generic parameter '{}' is not supported",
-                    self.r.generic_param_name(generic)
+                    self.r.generic_param_name(*generic)
                 );
             }
             Type::WinrtArray(_) | Type::WinrtArrayRef(_) | Type::WinrtConstRef(_) => {
@@ -342,7 +343,7 @@ impl<'r> ToTokens for TypePrinter<'r> {
     }
 }
 
-struct ParamsPrinter<'r, 's> {
+pub(crate) struct ParamsPrinter<'r, 's> {
     sig: &'s wmr::Signature,
     r: &'r wmr::Reader<'r>,
     use_rust_casing: bool,
@@ -360,7 +361,7 @@ impl<'r, 's> ToTokens for ParamsPrinter<'r, 's> {
                 self.fix_naming,
             );
             let ty = TypePrinter {
-                ty: param.ty,
+                ty: param.ty.clone(),
                 r: self.r,
                 use_rust_casing: self.use_rust_casing,
                 use_windows_core: self.use_windows_core,
@@ -518,22 +519,24 @@ impl From<Vec<ArchLayout>> for ArchLayouts {
     }
 }
 
-struct CopyClonePrinter<'i>(&'i Ident, bool);
+pub(crate) struct ImplsPrinter<'i>(&'i Ident, Impls);
 
-impl<'i> ToTokens for CopyClonePrinter<'i> {
+impl<'i> ToTokens for ImplsPrinter<'i> {
     fn to_tokens(&self, ts: &mut TokenStream) {
         let ident = self.0;
-        if self.1 {
+        if self.1.contains(Impls::COPY) {
             ts.extend(quote! { impl ::core::marker::Copy for #ident {} });
         }
 
-        ts.extend(quote! {
-            impl ::core::clone::Clone for #ident {
-                fn clone(&self) -> Self {
-                    *self
+        if self.1.contains(Impls::CLONE) {
+            ts.extend(quote! {
+                impl ::core::clone::Clone for #ident {
+                    fn clone(&self) -> Self {
+                        *self
+                    }
                 }
-            }
-        });
+            });
+        }
     }
 }
 
@@ -606,11 +609,24 @@ impl<'r> super::Emit<'r> {
 
     /// Adds a Clone and optional Copy implementation for the specified type
     #[inline]
-    pub(crate) fn copy_clone_impl<'i>(
-        &self,
-        ident: &'i Ident,
-        with_copy: bool,
-    ) -> CopyClonePrinter<'i> {
-        CopyClonePrinter(ident, with_copy)
+    pub(crate) fn impls<'i>(&self, ident: &'i Ident, impls: Impls) -> ImplsPrinter<'i> {
+        ImplsPrinter(ident, impls)
+    }
+
+    /// Checks if a type is `Copy`
+    #[inline]
+    pub(crate) fn is_copy(&self, ty: &Type) -> bool {
+        if let Type::TypeDef((td, _)) = ty {
+            if matches!(self.reader.type_def_kind(*td), wmr::TypeKind::Struct) {
+                return self
+                    .items
+                    .types
+                    .get(ty)
+                    .map(|i| i.contains(Impls::COPY))
+                    .unwrap_or_default();
+            }
+        }
+
+        self.reader.type_is_copyable(ty)
     }
 }

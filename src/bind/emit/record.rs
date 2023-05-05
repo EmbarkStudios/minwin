@@ -1,12 +1,10 @@
 use super::*;
 
 impl<'r> super::Emit<'r> {
-    pub(super) fn emit_record(
-        &self,
-        rec: TypeDef,
-    ) -> anyhow::Result<Option<(pm::Ident, TokenStream)>> {
+    pub(super) fn emit_record(&self, os: &mut OutputStream, rec: TypeDef) -> anyhow::Result<()> {
         let reader = self.reader;
 
+        let attrs = self.attributes(reader.type_def_attributes(rec));
         let ident = self.to_ident(reader.type_def_name(rec), IdentKind::Record);
 
         if reader.type_def_fields(rec).next().is_none() {
@@ -18,60 +16,35 @@ impl<'r> super::Emit<'r> {
                     pub const #ident: #guid_ty = #val;
                 };
 
-                return Ok(Some((ident, ts)));
+                os.insert_record(rec, ident, attrs, ts);
+                return Ok(());
             }
         }
 
         if reader.type_def_is_contract(rec) {
-            return Ok(None);
+            return Ok(());
         }
 
-        // Handle types like HWND are treated differently
+        // Handle types like HWND are not actual records
         if reader.type_def_is_handle(rec) {
-            return self.emit_handle(rec);
-        }
+            // Note that this is the sys version, we could also do the "std"
+            // version which uses *mut c_void for isize and u32/u64 for usize
+            let underlying = reader.type_def_underlying_type(rec);
+            let tp = self.type_printer(underlying);
 
-        fn emit_rec(rec: &Record, name: pm::Ident, convert_case: bool, os: &mut OutputStream) {
-            for (i, nested) in rec.nested.iter().enumerate() {
-                emit_rec(nested, format_ident!("{name}_{i}"), convert_case, os);
-            }
-
-            let is_union = rec.attrs.contains(Attrs::UNION);
-
-            let fields = rec.fields.iter().map(|f| {
-                let fname = to_ident(&f.name, convert_case, IdentKind::Field);
-                let fkind = &f.kind;
-                let fqt = QtPrint::from((fkind, convert_case));
-
-                if is_union && matches!(fkind, QualType::Record { .. }) {
-                    quote! { pub #fname: std::mem::ManuallyDrop<#fqt>, }
-                } else {
-                    quote! { pub #fname: #fqt, }
-                }
-            });
-
-            let ts = os.get_arch_block(rec.attrs);
-
-            let repr = &rec.layout;
-
-            let rec_kind = if is_union {
-                format_ident!("union")
-            } else {
-                format_ident!("struct")
+            let ts = quote! {
+                pub type #ident = #tp;
             };
 
-            ts.extend(quote! {
-                #repr
-                pub #rec_kind #name {
-                    #(#fields)*
-                }
-            });
+            os.insert_record(rec, ident, attrs, ts);
+            return Ok(());
         }
 
         let mut ts = TokenStream::new();
         self.emit_rec(rec, &ident, &mut ts)?;
+        os.insert_record(rec, ident, attrs, ts);
 
-        Ok(Some(ident, ts))
+        Ok(())
     }
 
     fn emit_rec(
@@ -91,41 +64,76 @@ impl<'r> super::Emit<'r> {
             return Ok(());
         }
 
-        const STRUCT: syn::Ident = syn::Ident::new("struct", pm::Span::call_site());
-        const UNION: syn::Ident = syn::Ident::new("union", pm::Span::call_site());
-
         let flags = reader.type_def_flags(rec);
 
-        let rec_kind = if flags.contains(wmr::TypeAttributes::EXPLICIT_LAYOUT) {
-            UNION
-        } else {
-            STRUCT
-        };
+        let is_union = flags.contains(wmr::TypeAttributes::EXPLICIT_LAYOUT);
 
-        let layout = if let Some(layout) = reader.type_def_class_layout(def) {
-            RecordLayout::::Packed(reader.class_layout_packing_size(layout) as u8);
-        } else {
+        let repr = if let Some(layout) = reader.type_def_class_layout(rec) {
+            RecordLayout::Agnostic(Layout::Packed(
+                reader.class_layout_packing_size(layout) as u8
+            ))
+        } else if let Some(clang_layout) = self.layouts.and_then(|l| l.get(&ident.to_string())) {
             // The windows metadata is missing vital layout information
             // 1. Alignment isn't collected at all https://github.com/microsoft/win32metadata/issues/1044
-            // 2. While packing information is collected there are some that are missing! <https://github.com/microsoft/win32metadata/issues/1562>
-            let clang_layout = if let Some(parent) = parent {
-                // Alignment doesn't propagate to nested types, and AFAICT there are
-                // no explicit alignments done for nested types
-                let pname = reader.type_def_name(parent).into();
-                clang_layouts
-                    .get(&pname)
-                    .filter(|l| l.0.iter().all(|al| matches!(al.l, Layout::Packed(_))))
+            // 2. While packing information is collected, there are some that are missing! <https://github.com/microsoft/win32metadata/issues/1562>
+            clang_layout.get_layout(self.attributes(reader.type_def_attributes(rec)))
+        } else {
+            RecordLayout::None
+        };
+
+        let fields = reader.type_def_fields(rec).filter_map(|f| {
+            if reader
+                .field_flags(f)
+                .contains(wmr::FieldAttributes::LITERAL)
+            {
+                return None;
+            }
+
+            let fname = self.to_ident(reader.field_name(f), IdentKind::Field);
+            let ty = reader.field_type(f, Some(rec));
+
+            // Unlike windows-bindgen, we don't unconditionally emit Copy/Clone for
+            // every record since it just increases compile times for no benefit
+            // in many cases. However, this means we need to to check if the field
+            // type is a record and whether it is is Copy, as otherwise we need
+            // to emit that the field is manually droppable
+            let ts = if is_union && !self.is_copy(&ty) {
+                let tp = self.type_printer(ty);
+                quote! { pub #fname: ::std::mem::ManuallyDrop<#tp> }
             } else {
-                clang_layouts.get(&name)
+                let tp = self.type_printer(ty);
+                quote! { pub #fname: #tp }
             };
 
-            quote! { #[repr(C)] }
-        };
+            Some(ts)
+        });
+
+        fn rec_kind(is_union: bool) -> &'static syn::Ident {
+            use std::sync::Once;
+
+            static INIT: Once = Once::new();
+            static mut KINDS: Option<(syn::Ident, syn::Ident)> = None;
+
+            unsafe {
+                INIT.call_once(|| {
+                    KINDS = Some((
+                        quote::format_ident!("struct"),
+                        quote::format_ident!("union"),
+                    ));
+                });
+                KINDS
+                    .as_ref()
+                    .map(|(s, u)| if is_union { u } else { s })
+                    .expect("failed to deserialize layouts")
+            }
+        }
+
+        let rec_kind = rec_kind(is_union);
 
         ts.extend(quote! {
             #repr
             pub #rec_kind #ident {
-                #(#fields)*
+                #(#fields),*
             }
         });
 
@@ -136,85 +144,4 @@ impl<'r> super::Emit<'r> {
 
         Ok(())
     }
-}
-
-fn gen_struct_with_name(gen: &Gen, def: TypeDef, struct_name: &str, cfg: &Cfg) -> TokenStream {
-    let flags = gen.reader.type_def_flags(def);
-    let cfg = cfg.union(&gen.reader.type_def_cfg(def, &[]));
-
-    let repr = if let Some(layout) = gen.reader.type_def_class_layout(def) {
-        let packing = Literal::usize_unsuffixed(gen.reader.class_layout_packing_size(layout));
-        quote! { #[repr(C, packed(#packing))] }
-    } else {
-        quote! { #[repr(C)] }
-    };
-
-    let fields = gen.reader.type_def_fields(def).map(|f| {
-        let name = to_ident(gen.reader.field_name(f));
-        let ty = gen.reader.field_type(f, Some(def));
-
-        if gen.reader.field_flags(f).contains(FieldAttributes::LITERAL) {
-            quote! {}
-        } else if !gen.sys
-            && flags.contains(TypeAttributes::EXPLICIT_LAYOUT)
-            && !gen.reader.field_is_copyable(f, def)
-        {
-            let ty = gen.type_default_name(&ty);
-            quote! { pub #name: ::std::mem::ManuallyDrop<#ty>, }
-        } else if !gen.sys
-            && !flags.contains(TypeAttributes::WINRT)
-            && !gen.reader.field_is_blittable(f, def)
-        {
-            if let Type::Win32Array((ty, len)) = ty {
-                let ty = gen.type_default_name(&ty);
-                quote! { pub #name: [::std::mem::ManuallyDrop<#ty>; #len], }
-            } else {
-                let ty = gen.type_default_name(&ty);
-                quote! { pub #name: ::std::mem::ManuallyDrop<#ty>, }
-            }
-        } else {
-            let ty = gen.type_default_name(&ty);
-            quote! { pub #name: #ty, }
-        }
-    });
-
-    let struct_or_union = if flags.contains(TypeAttributes::EXPLICIT_LAYOUT) {
-        quote! { union }
-    } else {
-        quote! { struct }
-    };
-
-    let doc = gen.cfg_doc(&cfg);
-    let features = gen.cfg_features(&cfg);
-
-    let mut tokens = quote! {
-        #repr
-        #doc
-        #features
-        pub #struct_or_union #name {#(#fields)*}
-    };
-
-    tokens.combine(&gen_struct_constants(gen, def, &name, &cfg));
-    tokens.combine(&gen_copy_clone(gen, def, &name, &cfg));
-    tokens.combine(&gen_debug(gen, def, &name, &cfg));
-    tokens.combine(&gen_windows_traits(gen, def, &name, &cfg));
-    tokens.combine(&gen_compare_traits(gen, def, &name, &cfg));
-
-    if !gen.sys {
-        tokens.combine(&quote! {
-            #features
-            impl ::core::default::Default for #name {
-                fn default() -> Self {
-                    unsafe { ::core::mem::zeroed() }
-                }
-            }
-        });
-    }
-
-    for (index, nested_type) in gen.reader.nested_types(def).enumerate() {
-        let nested_name = format!("{struct_name}_{index}");
-        tokens.combine(&gen_struct_with_name(gen, nested_type, &nested_name, &cfg));
-    }
-
-    tokens
 }

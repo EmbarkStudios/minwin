@@ -1,6 +1,7 @@
 use anyhow::Context as _;
 use camino::Utf8PathBuf as PathBuf;
 use clap::Parser;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Parser, Clone)]
 struct Generate {
@@ -54,7 +55,7 @@ fn main() -> anyhow::Result<()> {
 
     match opts.cmd {
         SubCmd::Generate(opts) => {
-            generate(opts)?;
+            //generate(opts)?;
         }
         SubCmd::Bind(opts) => {
             bind(opts)?;
@@ -67,67 +68,67 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn generate(opts: Generate) -> anyhow::Result<()> {
-    let mut parser = minwin::Parser::default();
+// fn generate(opts: Generate) -> anyhow::Result<()> {
+//     let mut parser = minwin::Parser::default();
 
-    if !opts.files.is_empty() {
-        for file in opts.files {
-            parser.add_file(file);
-        }
-    } else {
-        let cmd = cargo_metadata::MetadataCommand::new();
-        let cm = cmd
-            .exec()
-            .context("failed to gather metadata for workspace")?;
+//     if !opts.files.is_empty() {
+//         for file in opts.files {
+//             parser.add_file(file);
+//         }
+//     } else {
+//         let cmd = cargo_metadata::MetadataCommand::new();
+//         let cm = cmd
+//             .exec()
+//             .context("failed to gather metadata for workspace")?;
 
-        if let Some(package) = opts.package {
-            let krate = cm
-                .packages
-                .iter()
-                .find(|pkg| pkg.name == package)
-                .with_context(|| format!("unable to locate crate '{package}'"))?;
-            parser.add_crate(krate);
-        } else {
-            parser.add_workspace(&cm);
-        }
-    }
+//         if let Some(package) = opts.package {
+//             let krate = cm
+//                 .packages
+//                 .iter()
+//                 .find(|pkg| pkg.name == package)
+//                 .with_context(|| format!("unable to locate crate '{package}'"))?;
+//             parser.add_crate(krate);
+//         } else {
+//             parser.add_workspace(&cm);
+//         }
+//     }
 
-    let mut parsed = parser.parse();
+//     let mut parsed = parser.parse();
 
-    let mut hints = minwin::Hints::default();
+//     let mut hints = minwin::Hints::default();
 
-    for bf in &parsed {
-        bf.gather_hints(&mut hints);
-    }
+//     for bf in &parsed {
+//         bf.gather_hints(&mut hints);
+//     }
 
-    let md = minwin::MetadataFiles::new().context("failed to gather metadata files")?;
-    let resolver = minwin::Resolver::flatten(&md, hints).context("failed to resolve metadata")?;
+//     let md = minwin::MetadataFiles::new().context("failed to gather metadata files")?;
+//     let resolver = minwin::Resolver::flatten(&md, hints).context("failed to resolve metadata")?;
 
-    for pf in &mut parsed {
-        let genned = pf
-            .iter_bind_modules()
-            .enumerate()
-            .map(|(i, m)| {
-                let ts = minwin::generate(&resolver, m, false)
-                    .with_context(|| format!("{}", m.ident))?;
-                Ok((i, ts))
-            })
-            .collect::<anyhow::Result<Vec<_>>>()?;
+//     for pf in &mut parsed {
+//         let genned = pf
+//             .iter_bind_modules()
+//             .enumerate()
+//             .map(|(i, m)| {
+//                 let ts = minwin::generate(&resolver, m, false)
+//                     .with_context(|| format!("{}", m.ident))?;
+//                 Ok((i, ts))
+//             })
+//             .collect::<anyhow::Result<Vec<_>>>()?;
 
-        for (i, ts) in genned {
-            pf.replace_module(i, ts)?;
-        }
-    }
+//         for (i, ts) in genned {
+//             pf.replace_module(i, ts)?;
+//         }
+//     }
 
-    let run_rustfmt = !opts.no_fmt;
+//     let run_rustfmt = !opts.no_fmt;
 
-    for pf in parsed {
-        pf.replace(run_rustfmt)
-            .with_context(|| format!("failed to generate bindings in '{}'", pf.path))?;
-    }
+//     for pf in parsed {
+//         pf.replace(run_rustfmt)
+//             .with_context(|| format!("failed to generate bindings in '{}'", pf.path))?;
+//     }
 
-    Ok(())
-}
+//     Ok(())
+// }
 
 use windows_metadata::reader as wmr;
 
@@ -135,18 +136,18 @@ fn search(opts: Search) -> anyhow::Result<()> {
     let files = &wmr::File::with_default(&[]).unwrap();
     let reader = &wmr::Reader::new(files);
 
-    use windows_bindgen::Disambiguate as Dis;
+    use minwin::bind::Disambiguate as Dis;
 
-    for (item, dis) in minwin::qualify_items(reader, opts.items) {
+    for (name, item) in minwin::qualify_items(reader, opts.items)? {
         println!(
             "{}{}",
-            match dis {
-                None => "",
-                Some(Dis::Constant) => "(constant) ",
-                Some(Dis::Function) => "(function) ",
-                Some(Dis::Record) => "(record) ",
+            match item.dis {
+                Dis::Any => "",
+                Dis::Constant => "(constant) ",
+                Dis::Function => "(function) ",
+                Dis::Record => "(record) ",
             },
-            nu_ansi_term::Color::Blue.paint(item)
+            nu_ansi_term::Color::Blue.paint(name)
         );
     }
 
@@ -172,7 +173,9 @@ impl Config {
 fn bind(opts: Bind) -> anyhow::Result<()> {
     let cfg = Config::load(&opts.path)?;
 
-    let (bound, items) = minwin::bind(cfg.binds, is_sys)?;
+    let has_interfaces = !cfg.interfaces.is_empty();
+
+    let (bound, items) = minwin::bind(cfg.binds, cfg.interfaces)?;
 
     let out_path = if cfg.output.as_str().starts_with('$') {
         unreachable!()
@@ -269,7 +272,7 @@ fn bind(opts: Bind) -> anyhow::Result<()> {
         func_pointers += f;
         f.emit("func pointers");
 
-        if !is_sys {
+        if has_interfaces {
             let i = items.interfaces.into();
             interfaces += i;
             i.emit("interaces");
@@ -289,7 +292,7 @@ fn bind(opts: Bind) -> anyhow::Result<()> {
     aliases.emit("aliases");
     func_pointers.emit("func pointers");
 
-    if !is_sys {
+    if has_interfaces {
         interfaces.emit("interfaces");
     }
 

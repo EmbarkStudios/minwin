@@ -1,55 +1,17 @@
+use super::shared::Attrs;
 use proc_macro2::{self as pm, TokenStream};
-use quote::{format_ident, quote, ToTokens};
+use quote::{format_ident, quote};
 use std::collections::BTreeMap;
 use ustr::Ustr;
 use windows_metadata::reader::{Field, MethodDef, Type, TypeDef};
 
-bitflags::bitflags! {
-    #[derive(Debug, Copy, Clone)]
-    pub struct Attrs: u8 {
-        const X86 = 1 << 0;
-        const X86_64 = 1 << 1;
-        const AARCH64 = 1 << 2;
-
-        const COPY_CLONE = 1 << 3;
-        const UNION = 1 << 4;
-        const DEPRECATED = 1 << 5;
-
-        const ARCH = Attrs::X86.bits() | Attrs::X86_64.bits() | Attrs::AARCH64.bits();
-    }
-}
-
-impl ToTokens for Attrs {
-    fn to_tokens(&self, ts: &mut TokenStream) {
-        let arch = self.intersection(Attrs::ARCH);
-
-        let count = arch.iter().count();
-        let arches = arch.iter().map(|a| {
-            if a.contains(Attrs::X86) {
-                "x86"
-            } else if a.contains(Attrs::X86_64) {
-                "x86_64"
-            } else if a.contains(Attrs::AARCH64) {
-                "aarch64"
-            } else {
-                unreachable!()
-            }
-        });
-
-        let cfg_parts = if count == 1 {
-            quote! { #(target_arch = #arches),* }
-        } else {
-            quote! { any(#(target_arch = #arches),*) }
-        };
-
-        ts.extend(cfg_parts);
-    }
-}
-
 pub struct OutputStream {
     root: TokenStream,
     libs: Vec<(Ustr, bool, TokenStream)>,
-    arches: Vec<(Attrs, Ustr, TokenStream)>,
+    /// Blocks of records partitioned by `target_arch`.
+    ///
+    /// The top level BTreeMap is overkill but the entry() API is too good
+    rec_blocks: BTreeMap<u8, BTreeMap<pm::Ident, TokenStream>>,
     enums: BTreeMap<TypeDef, TokenStream>,
     constants: BTreeMap<Field, (pm::Ident, TokenStream)>,
     types: BTreeMap<Type, (pm::Ident, Option<TokenStream>)>,
@@ -61,7 +23,7 @@ impl OutputStream {
         Self {
             root: TokenStream::new(),
             libs: Vec::new(),
-            arches: Vec::new(),
+            rec_blocks: BTreeMap::new(),
             enums: BTreeMap::new(),
             constants: BTreeMap::new(),
             types: BTreeMap::new(),
@@ -69,45 +31,22 @@ impl OutputStream {
         }
     }
 
-    pub fn get_arch_block(&mut self, attrs: Attrs) -> &mut TokenStream {
-        let arches = attrs & Attrs::ARCH;
+    /// Inserts a record (struct or union)
+    ///
+    /// Note that unlike other items, records can be arch specific, so we group
+    /// them via target arch so we can avoid emitting `cfg` attributes for each
+    /// unique record that needs them (and potentially on Copy/Clone impls)
+    #[inline]
+    pub fn insert_record(&mut self, rec: TypeDef, ident: pm::Ident, attrs: Attrs, ts: TokenStream) {
+        let arches = (attrs & Attrs::ARCH).bits();
 
-        if arches.is_empty() {
-            &mut self.root
-        } else if let Some(ab) = self
-            .arches
-            .iter()
-            .position(|(attrs, _, _ts)| arches.bits() == attrs.bits())
-        {
-            &mut self.arches[ab].2
+        if arches == 0 {
+            // If the record isn't arch specific, just insert it as a regular type
+            // so that they are lexicographically ordered with each other
+            self.insert_type(Type::TypeDef((rec, Vec::new())), ident, ts);
         } else {
-            let mut mod_name = String::new();
-
-            for (i, arch) in arches
-                .iter()
-                .map(|a| {
-                    if a.contains(Attrs::X86) {
-                        "x86"
-                    } else if a.contains(Attrs::X86_64) {
-                        "x86_64"
-                    } else if a.contains(Attrs::AARCH64) {
-                        "aarch64"
-                    } else {
-                        unreachable!()
-                    }
-                })
-                .enumerate()
-            {
-                if i > 0 {
-                    mod_name.push('_');
-                }
-
-                mod_name.push_str(arch);
-            }
-
-            self.arches
-                .push((arches, mod_name.into(), TokenStream::new()));
-            &mut self.arches.last_mut().unwrap().2
+            let block = self.rec_blocks.entry(arches).or_default();
+            block.insert(ident, ts);
         }
     }
 
@@ -166,14 +105,47 @@ impl OutputStream {
     pub fn finalize(self, use_windows_targets: bool) -> TokenStream {
         let mut root = self.root;
 
-        for (attrs, mn, ts) in self.arches {
-            let mn = format_ident!("{mn}");
+        // Write out arch specific items last so that we get lexicographic ordering
+        // for a vast majority of items without weird arch specific types sprinkled in
+        for (attrs, recs) in self.rec_blocks {
+            let arches = Attrs::from_bits(attrs).expect("this should be impossible");
+            let mut mod_name = String::new();
+
+            for (i, arch) in arches
+                .iter()
+                .map(|a| {
+                    if a.contains(Attrs::X86) {
+                        "x86"
+                    } else if a.contains(Attrs::X86_64) {
+                        "x86_64"
+                    } else if a.contains(Attrs::AARCH64) {
+                        "aarch64"
+                    } else {
+                        unreachable!()
+                    }
+                })
+                .enumerate()
+            {
+                if i > 0 {
+                    mod_name.push('_');
+                }
+
+                mod_name.push_str(arch);
+            }
+
+            let mn = format_ident!("{mod_name}");
+
+            // Add the arch specific module
+            //
+            // Note we glob import the parent module so that all types that aren't
+            // arch specific can be located, and then reexport all the types
+            // in the module to make them available to the crate
             root.extend(quote! {
                 #[cfg(#attrs)]
                 mod #mn {
                     use super::*;
 
-                    #ts
+                    #(recs*)
                 }
 
                 #[cfg(#attrs)]
