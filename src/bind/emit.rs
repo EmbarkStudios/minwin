@@ -1,22 +1,28 @@
 mod ostream;
 mod constant;
+mod function_pointer;
 mod function;
+mod record;
 mod shared;
 
 use shared::*;
 use ostream::OutputStream;
 
 use super::InterfaceMap;
+use anyhow::Context as _;
 use proc_macro2::{self as pm, TokenStream};
 use quote::quote;
-use windows_metadata::reader::{self as wmr, Reader, Type, TypeKind, Field};
+use windows_metadata::reader::{self as wmr, Reader, Type, TypeDef, TypeKind, Field};
 
 pub struct Emit<'r> {
     /// Used to query the metadata database
-    reader: &'r Reader,
+    reader: &'r Reader<'r>,
     /// List of interfaces to emit, if an interface/class is not in this list it
     /// is emitted as a void* type alias instead
     ifaces: InterfaceMap,
+    /// We collect additional layout information not currently present in the
+    /// the metadata to supplement it
+    layouts: Option<&'static ustr::UstrMap<ArchLayouts>>,
     /// If true, use the `windows-targets::link!` macro to link functions,
     /// otherwise functions are collated in extern blocks and linked with the
     /// appropriate dll
@@ -31,15 +37,16 @@ pub struct Emit<'r> {
     pretty_print: bool,
 }
 
-impl Emit {
+impl<'r> Emit<'r> {
     #[inline]
     fn to_ident(&self, name: &str, kind: IdentKind) -> pm::Ident {
         shared::to_ident(name, kind, self.use_rust_casing, self.fix_naming)
     }
 }
 
-pub fn emit_items(emit: Emit<'_>, items: super::ItemSet) -> String {
+pub fn emit_items(emit: Emit<'_>, items: super::ItemSet) -> anyhow::Result<String> {
     let mut os = OutputStream::new();
+    let reader = emit.reader;
 
     for ty in items.types {
         if !emit.use_core && !matches!(ty, Type::TypeDef(..)) {
@@ -91,6 +98,8 @@ pub fn emit_items(emit: Emit<'_>, items: super::ItemSet) -> String {
                 },
                 Type::GUID => {
                     let ident = emit.to_ident("GUID", IdentKind::Record);
+                    let copy_clone_impl = emit.copy_clone_impl(&ident, true);
+
                     let ts= quote! {
                         #[repr(C)]
                         pub struct #ident {
@@ -99,12 +108,9 @@ pub fn emit_items(emit: Emit<'_>, items: super::ItemSet) -> String {
                             pub data3: u16,
                             pub data4: [u8; 8],
                         }
-                        impl ::core::marker::Copy for #ident {}
-                        impl ::core::clone::Clone for #ident {
-                            fn clone(&self) -> Self {
-                                *self
-                            }
-                        }
+                        
+                        #copy_clone_impl
+
                         impl #ident {
                             #[allow(dead_code)]
                             pub const fn from_u128(uuid: u128) -> Self {
@@ -162,25 +168,10 @@ pub fn emit_items(emit: Emit<'_>, items: super::ItemSet) -> String {
                     sorted.insert(gen.reader.type_def_name(def), enums::gen(gen, def));
                 }
                 TypeKind::Struct => {
-                    if gen.reader.type_def_fields(def).next().is_none() {
-                        if let Some(guid) = gen.reader.type_def_guid(def) {
-                            let name = gen.reader.type_def_name(def);
-                            let ident = to_ident(name);
-                            let value = gen.guid(&guid);
-                            let guid = gen.type_name(&Type::GUID);
-                            sorted.insert(
-                                name,
-                                quote! {
-                                    pub const #ident: #guid = #value;
-                                },
-                            );
-                            continue;
-                        }
-                    }
-                    sorted.insert(gen.reader.type_def_name(def), structs::gen(gen, def));
+                    emit.emit_record(def)?
                 }
                 TypeKind::Delegate => {
-                    sorted.insert(gen.reader.type_def_name(def), delegates::gen(gen, def));
+                    emit.emit_function_pointer(def)?
                 }
             };
 
@@ -188,7 +179,36 @@ pub fn emit_items(emit: Emit<'_>, items: super::ItemSet) -> String {
         }
     }
 
+    for constant in items.constants {
+        emit.emit_constant(&mut os, constant);
+    }
+
     for func in items.functions {
-        emit.emit_func(&mut os, reader, func);
+        emit.emit_func(&mut os, func);
+    }
+
+    let ts = os.finalize(emit.link_targets);
+
+    if emit.pretty_print {
+        let file = syn::parse2(ts).context("unable to parse output as a valid Rust file")?;
+        Ok(prettyplease::unparse(&file))
+    } else {
+        Ok(ts.to_string())
+    }
+}
+
+pub fn load_clang_layouts() -> &'static ustr::UstrMap<ArchLayout> {
+    use std::sync::Once;
+
+    const COMPRESSED_LAYOUTS: &[u8] = include_bytes!("../../md/layouts.json.zstd");
+    static INIT: Once = Once::new();
+    static mut LAYOUTS: Option<ustr::UstrMap<ArchLayout>> = None;
+
+    unsafe {
+        INIT.call_once(|| {
+            let decompressed = zstd::decode_all(std::io::Cursor::new(COMPRESSED_LAYOUTS)).expect("failed to decompress layouts");
+            LAYOUTS = Some(serde_json::from_slice(&decompressed).expect("failed to deserialize layouts"));
+        });
+        LAYOUTS.as_ref().expect("failed to deserialize layouts")
     }
 }

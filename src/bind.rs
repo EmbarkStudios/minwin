@@ -316,11 +316,12 @@ pub fn bind(
     }
 
     let emit = emit::Emit {
+        reader,
         ifaces,
         link_targets: false,
         use_core: false,
         fix_naming: false,
-        fix_casing: false,
+        use_rust_casing: false,
         pretty_print: true,
     };
 

@@ -3,16 +3,26 @@ use std::collections::BTreeSet;
 use windows_metadata::reader::{self, Reader, Type, TypeDef, TypeKind};
 
 pub fn collect(reader: &Reader, interfaces: &InterfaceMap, ty: &Type, set: &mut BTreeSet<Type>) {
-    let ty = ty.to_underlying_type();
+    // Get the underlying type, the pointers are irrelevant
+    let ty = match ty {
+        Type::MutPtr((ty, _)) => &ty,
+        Type::ConstPtr((ty, _)) => &ty,
+        Type::Win32Array((ty, _)) => &ty,
+        Type::WinrtArray(ty) => &ty,
+        Type::WinrtArrayRef(ty) => &ty,
+        Type::WinrtConstRef(ty) => &ty,
+        _ => ty,
+    };
+
     if !set.insert(ty.clone()) {
         return;
     }
 
-    let Type::TypeDef((def, generics)) = &ty else { return; };
+    let Type::TypeDef((def, generics)) = ty else { return; };
     let def = *def;
 
     for generic in generics {
-        collect(reader, interfaces, generic, set);
+        collect(reader, interfaces, &generic, set);
     }
 
     for field in reader.type_def_fields(def) {

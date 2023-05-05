@@ -10,7 +10,10 @@ impl<'r> Emit<'r> {
 
         let attrs = self.attributes(reader.method_def_attributes(meth));
         let params = self.param_printer(&sig);
-        let ret = self.ret_printer(&sig);
+        let ret = sig.return_type.as_ref().map(|rt| {
+            let rt = self.type_printer(rt.clone());
+            quote! { -> #rt }
+        });
 
         // Handle the 3! functions that have a different link name :crying:
         let symbol = if let Some(impl_map) = reader.method_def_impl_map(sig.def) {
@@ -36,17 +39,16 @@ impl<'r> Emit<'r> {
                 ::windows_targets::link!(#module #abi #symbol fn #ident(#params)#ret);
             }
         } else {
-            if self.use_rust_casing || symbol != name {
+            let link_name = (self.use_rust_casing || symbol != name).then(|| {
                 quote! {
-                    #attrs
                     #[link_name = #symbol]
-                    pub fn #ident(#params)#ret;
                 }
-            } else {
-                quote! {
-                    #attrs
-                    pub fn #ident(#params)#ret;
-                }
+            });
+
+            quote! {
+                #attrs
+                #link_name
+                pub fn #ident(#params)#ret;
             }
         };
 

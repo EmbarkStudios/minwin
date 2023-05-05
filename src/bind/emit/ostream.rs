@@ -2,7 +2,7 @@ use proc_macro2::{self as pm, TokenStream};
 use quote::{format_ident, quote, ToTokens};
 use std::collections::BTreeMap;
 use ustr::Ustr;
-use windows_metadata::reader::{Field, MethodDef, Reader, Type, TypeDef};
+use windows_metadata::reader::{Field, MethodDef, Type, TypeDef};
 
 bitflags::bitflags! {
     #[derive(Debug, Copy, Clone)]

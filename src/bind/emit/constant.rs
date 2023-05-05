@@ -1,7 +1,7 @@
 use super::*;
 
 impl<'r> super::Emit<'r> {
-    fn emit_constant(&self, os: &mut OutputStream, def: Field) -> anyhow::Result<()> {
+    pub(super) fn emit_constant(&self, os: &mut OutputStream, def: Field) -> anyhow::Result<()> {
         let reader = self.reader;
         let name = self.to_ident(reader.field_name(def), IdentKind::Variant(None));
         let ty = reader.field_type(def, None).to_const_type();
@@ -14,7 +14,19 @@ impl<'r> super::Emit<'r> {
             };
 
             if ty == constant_type {
-                let typename = self.type_printer(constant_type);
+                // Type::String normally goes to HSTRING, but this is misleading
+                // for constants, since it can be ansi or utf-16, so we need to
+                // change it to the appropriate pointer type based on the fields
+                // encoding
+                let typename = self.type_printer(if matches!(constant_type, Type::String) {
+                    if value.is_wide_str {
+                        Type::PCWSTR
+                    } else {
+                        Type::PCSTR
+                    }
+                } else {
+                    constant_type
+                });
 
                 Some(quote! {
                     pub const #name: #typename = #value;

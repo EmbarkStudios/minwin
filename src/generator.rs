@@ -8,42 +8,6 @@ use proc_macro2::{self as pm, TokenStream};
 use quote::{format_ident, quote, ToTokens, TokenStreamExt};
 use ustr::{Ustr, UstrMap};
 
-impl ToTokens for Layout {
-    fn to_tokens(&self, ts: &mut TokenStream) {
-        let repr = match self {
-            Self::Align(align) => {
-                let align = pm::Literal::u8_unsuffixed(*align);
-                quote! { align(#align) }
-            }
-            Layout::Packed(pack) => {
-                let pack = pm::Literal::u8_unsuffixed(*pack);
-                quote! { packed(#pack) }
-            }
-        };
-
-        ts.extend(repr);
-    }
-}
-
-impl ToTokens for RecordLayout {
-    fn to_tokens(&self, ts: &mut TokenStream) {
-        match self {
-            Self::None => ts.extend(quote! {#[repr(C)]}),
-            Self::Agnostic(layout) => {
-                ts.extend(quote! { #[repr(C, #layout)]});
-            }
-            Self::Arch(layouts) => {
-                for al in layouts {
-                    let attrs = Attrs::from_bits(al.a).unwrap();
-                    let layout = al.l;
-
-                    ts.extend(quote! { #[cfg_attr(#attrs, repr(C, #layout))] });
-                }
-            }
-        }
-    }
-}
-
 struct OutputStream {
     root: TokenStream,
     libs: Vec<(Ustr, bool, TokenStream)>,

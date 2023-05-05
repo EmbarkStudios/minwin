@@ -1,7 +1,8 @@
+use pm::Ident;
 use proc_macro2::{self as pm, TokenStream};
 use quote::{format_ident, quote, ToTokens, TokenStreamExt};
 use std::fmt;
-use windows_metadata::reader::{self as wmr, Param, Type};
+use windows_metadata::reader::{self as wmr, Type};
 
 #[derive(Copy, Clone)]
 pub(super) enum IdentKind<'res> {
@@ -68,11 +69,13 @@ pub(super) fn to_ident(name: &str, kind: IdentKind, use_rust_casing: bool, fix_n
         is.push('_');
     }
 
-    quote::format_ident!("{is}")
+    format_ident!("{is}")
 }
 
 pub struct Value {
     pub val: wmr::Value,
+    /// String constants just use the Type::String which doesn't have encoding
+    /// information, which is only available via the wrapping item, eg Constant
     pub is_wide_str: bool,
 }
 
@@ -183,8 +186,8 @@ pub struct Guid<'r> {
 impl<'r> ToTokens for Guid<'r> {
     fn to_tokens(&self, ts: &mut TokenStream) {
         let GUID(a, b, c, d, e, f, g, h, i, j, k) = self.value;
-        ts.append(&self.printer);
-        ts.extend(format!("::from_u128(0x{a:08x?}_{b:04x?}_{c:04x?}_{d:02x?}{e:02x?}_{f:02x?}{g:02x?}{h:02x?}{i:02x?}{j:02x?}{k:02x?})").parse::<TokenStream>().unwrap());
+        self.printer.to_tokens(ts);
+        ts.extend(format!("::from_u128(0x{a:08x}_{b:04x}_{c:04x}_{d:02x}{e:02x}_{f:02x}{g:02x}{h:02x}{i:02x}{j:02x}{k:02x})").parse::<TokenStream>().unwrap());
     }
 }
 
@@ -236,10 +239,8 @@ struct Ptrs(usize, bool);
 
 impl ToTokens for Ptrs {
     fn to_tokens(&self, ts: &mut TokenStream) {
-        let tok = if self.1 { "*mut " } else { "*const " };
-        for _ in 0..self.0 {
-            ts.append(tok);
-        }
+        let tok = if self.1 { "*mut" } else { "*const" };
+        ts.append_separated((0..self.0).map(|_| tok), ' ');
     }
 }
 
@@ -310,14 +311,14 @@ impl<'r> ToTokens for TypePrinter<'r> {
                 }
             }
             Type::MutPtr((ty, pointers)) => {
-                let ptrs = Ptrs((pointers, true));
+                let ptrs = Ptrs(pointers, true);
                 let element = self.wrap(*ty);
 
                 ts.extend(quote! { #ptrs #element });
                 return;
             }
             Type::ConstPtr((ty, pointers)) => {
-                let ptrs = Ptrs((pointers, false));
+                let ptrs = Ptrs(pointers, false);
                 let element = self.wrap(*ty);
 
                 ts.extend(quote! { #ptrs #element });
@@ -337,7 +338,7 @@ impl<'r> ToTokens for TypePrinter<'r> {
             Type::TypeName => unreachable!("this should never happen..."),
         };
 
-        ts.append(quote::format_ident!("{ty_name}"));
+        ts.append(format_ident!("{ty_name}"));
     }
 }
 
@@ -418,6 +419,124 @@ impl ToTokens for Attrs {
     }
 }
 
+#[derive(Debug, Copy, Clone, serde::Deserialize)]
+#[serde(tag = "l", content = "s")]
+pub enum Layout {
+    Packed(u8),
+    Align(u8),
+}
+
+impl ToTokens for Layout {
+    fn to_tokens(&self, ts: &mut TokenStream) {
+        let repr = match self {
+            Self::Align(align) => {
+                let align = pm::Literal::u8_unsuffixed(*align);
+                quote! { align(#align) }
+            }
+            Layout::Packed(pack) => {
+                let pack = pm::Literal::u8_unsuffixed(*pack);
+                quote! { packed(#pack) }
+            }
+        };
+
+        ts.extend(repr);
+    }
+}
+
+#[derive(Debug)]
+pub enum RecordLayout {
+    None,
+    Agnostic(Layout),
+    Arch(Vec<ArchLayout>),
+}
+
+impl ToTokens for RecordLayout {
+    fn to_tokens(&self, ts: &mut TokenStream) {
+        match self {
+            Self::None => ts.extend(quote! {#[repr(C)]}),
+            Self::Agnostic(layout) => {
+                ts.extend(quote! { #[repr(C, #layout)]});
+            }
+            Self::Arch(layouts) => {
+                for al in layouts {
+                    let attrs = Attrs::from_bits(al.a).unwrap();
+                    let layout = al.l;
+
+                    ts.extend(quote! { #[cfg_attr(#attrs, repr(C, #layout))] });
+                }
+            }
+        }
+    }
+}
+
+#[derive(serde::Deserialize, Debug, Clone, Copy)]
+pub struct ArchLayout {
+    #[serde(default)]
+    pub a: u8,
+    pub l: Layout,
+}
+
+#[derive(serde::Deserialize, Debug, Clone, Default)]
+pub struct ArchLayouts(Vec<ArchLayout>);
+
+impl ArchLayouts {
+    #[inline]
+    pub fn get_layout(&self, attrs: Attrs) -> RecordLayout {
+        let arches = attrs.intersection(Attrs::ARCH).bits();
+
+        if arches == 0 || self.0[0].a == 0 {
+            RecordLayout::Agnostic(self.0[0].l)
+        } else {
+            let count = self.0.iter().filter(|al| al.a & arches != 0).count();
+
+            if count > 1 {
+                RecordLayout::Arch(
+                    self.0
+                        .iter()
+                        .filter_map(|al| (al.a & arches != 0).then_some(*al))
+                        .collect(),
+                )
+            } else {
+                if let Some(l) = self
+                    .0
+                    .iter()
+                    .filter_map(|al| (al.a & arches != 0).then_some(al.l))
+                    .next()
+                {
+                    RecordLayout::Agnostic(l)
+                } else {
+                    RecordLayout::None
+                }
+            }
+        }
+    }
+}
+
+impl From<Vec<ArchLayout>> for ArchLayouts {
+    fn from(v: Vec<ArchLayout>) -> Self {
+        Self(v)
+    }
+}
+
+struct CopyClonePrinter<'i>(&'i Ident, bool);
+
+impl<'i> ToTokens for CopyClonePrinter<'i> {
+    fn to_tokens(&self, ts: &mut TokenStream) {
+        let ident = self.0;
+        if self.1 {
+            ts.extend(quote! { impl ::core::marker::Copy for #ident {} });
+        }
+
+        ts.extend(quote! {
+            impl ::core::clone::Clone for #ident {
+                fn clone(&self) -> Self {
+                    *self
+                }
+            }
+        });
+    }
+}
+
 impl<'r> super::Emit<'r> {
     #[inline]
     pub(crate) fn type_printer(&self, ty: Type) -> TypePrinter<'r> {
@@ -483,5 +602,15 @@ impl<'r> super::Emit<'r> {
         }
 
         attrs
+    }
+
+    /// Adds a Clone and optional Copy implementation for the specified type
+    #[inline]
+    pub(crate) fn copy_clone_impl<'i>(
+        &self,
+        ident: &'i Ident,
+        with_copy: bool,
+    ) -> CopyClonePrinter<'i> {
+        CopyClonePrinter(ident, with_copy)
     }
 }

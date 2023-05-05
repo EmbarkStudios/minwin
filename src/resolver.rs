@@ -7,58 +7,9 @@ use windows_metadata::{
     FieldAttributes, PInvokeAttributes, TypeAttributes,
 };
 
-#[derive(serde::Deserialize, Debug, Clone, Copy)]
-pub struct ArchLayout {
-    #[serde(default)]
-    pub a: u8,
-    pub l: Layout,
-}
-
-#[derive(serde::Deserialize, Debug, Clone, Default)]
-pub struct ArchLayouts(Vec<ArchLayout>);
-
-impl ArchLayouts {
-    #[inline]
-    pub fn get_layout(&self, attrs: Attrs) -> RecordLayout {
-        let arches = attrs.intersection(Attrs::ARCH).bits();
-
-        if arches == 0 || self.0[0].a == 0 {
-            RecordLayout::Agnostic(self.0[0].l)
-        } else {
-            let count = self.0.iter().filter(|al| al.a & arches != 0).count();
-
-            if count > 1 {
-                RecordLayout::Arch(
-                    self.0
-                        .iter()
-                        .filter_map(|al| (al.a & arches != 0).then_some(*al))
-                        .collect(),
-                )
-            } else {
-                if let Some(l) = self
-                    .0
-                    .iter()
-                    .filter_map(|al| (al.a & arches != 0).then_some(al.l))
-                    .next()
-                {
-                    RecordLayout::Agnostic(l)
-                } else {
-                    RecordLayout::None
-                }
-            }
-        }
-    }
-}
-
-impl From<Vec<ArchLayout>> for ArchLayouts {
-    fn from(v: Vec<ArchLayout>) -> Self {
-        Self(v)
-    }
-}
-
 pub struct MetadataFiles {
     files: Vec<File>,
-    layouts: UstrMap<ArchLayouts>,
+    
 }
 
 impl MetadataFiles {
@@ -226,20 +177,6 @@ impl QualType {
 pub struct Item {
     pub name: Ustr,
     pub kind: QualType,
-}
-
-#[derive(Debug, Copy, Clone, serde::Deserialize)]
-#[serde(tag = "l", content = "s")]
-pub enum Layout {
-    Packed(u8),
-    Align(u8),
-}
-
-#[derive(Debug)]
-pub enum RecordLayout {
-    None,
-    Agnostic(Layout),
-    Arch(Vec<ArchLayout>),
 }
 
 #[derive(Debug)]
