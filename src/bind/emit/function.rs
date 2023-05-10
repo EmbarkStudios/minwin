@@ -30,8 +30,10 @@ impl<'r> Emit<'r> {
             panic!("function '{name}' is defined within static lib '{lib}', please file an issue");
         }
 
-        let ts = if self.link_targets {
-            let abi = reader.method_def_extern_abi(meth);
+        let abi = reader.method_def_extern_abi(meth);
+        let is_system = abi == "system";
+
+        let ts = if self.linking_style == crate::bind::LinkingStyle::WindowsTargets {
             let symbol = (self.use_rust_casing || symbol != name).then_some(symbol);
 
             quote! {
@@ -52,6 +54,6 @@ impl<'r> Emit<'r> {
             }
         };
 
-        os.insert_function(module.into(), meth, ts);
+        os.insert_function(module.into(), is_system, meth, ident, ts);
     }
 }
