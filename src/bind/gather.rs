@@ -2,123 +2,288 @@ use super::{InterfaceMap, ItemSet};
 use std::collections::{BTreeMap, BTreeSet};
 use windows_metadata::reader::{self, Reader, Type, TypeDef, TypeKind};
 
-pub fn collect(
-    reader: &Reader,
-    interfaces: &InterfaceMap,
-    ty: &Type,
-    mut ri: Impls,
-    set: &mut BTreeMap<Type, Impls>,
-) {
-    if let Type::TypeDef((def, _)) = ty {
-        if !matches!(reader.type_def_kind(*def), TypeKind::Struct) {
-            ri = Impls::empty();
-        }
-    } else {
-        ri = Impls::empty();
-    }
-
-    // Get the underlying type, the pointers are irrelevant
-    let ty = match ty {
-        Type::MutPtr((ty, _)) => &ty,
-        Type::ConstPtr((ty, _)) => &ty,
-        Type::Win32Array((ty, _)) => &ty,
-        Type::WinrtArray(ty) => &ty,
-        Type::WinrtArrayRef(ty) => &ty,
-        Type::WinrtConstRef(ty) => &ty,
-        _ => ty,
-    };
-
-    if set.contains_key(ty) {
-        return;
-    }
-
-    set.insert(ty.clone(), ri);
-
-    let Type::TypeDef((def, generics)) = ty else { return; };
-    let def = *def;
-
-    for generic in generics {
-        collect(reader, interfaces, &generic, ri, set);
-    }
-
-    for field in reader.type_def_fields(def) {
-        let ty = reader.field_type(field, Some(def));
-        if let Type::TypeDef((fdef, _)) = &ty {
-            if reader.type_def_namespace(*fdef).is_empty() {
-                continue;
-            }
-        }
-        collect(reader, interfaces, &ty, ri, set);
-    }
-
-    let kind = reader.type_def_kind(def);
-    let ty_name = reader.type_def_name(def);
-
-    let methods = if kind == TypeKind::Interface {
-        let Some(im) = interfaces.get(ty_name) else { return; };
-        Some(im)
-    } else {
-        None
-    };
-
-    for method in reader.type_def_methods(def) {
-        // Skip delegate pseudo-constructors.
-        let name = reader.method_def_name(method);
-        if name == ".ctor" {
-            continue;
-        }
-
-        if let Some(m) = &methods {
-            if !m.contains(name) {
-                tracing::debug!("skipping {ty_name}::{name}");
-                continue;
-            }
-        }
-
-        let sig = reader.method_def_signature(method, generics);
-        if let Some(rt) = &sig.return_type {
-            collect(reader, interfaces, rt, ri, set);
-        }
-        for param in &sig.params {
-            collect(reader, interfaces, &param.ty, ri, set);
-        }
-    }
-
-    for interface in reader.type_interfaces(&ty) {
-        collect(reader, interfaces, &interface.ty, ri, set);
-    }
-
-    if kind == TypeKind::Struct
-        && reader.type_def_fields(def).next().is_none()
-        && reader.type_def_guid(def).is_some()
-    {
-        set.insert(Type::GUID, Impls::empty());
-    }
-
-    collect_nested(reader, interfaces, def, ri, set);
+/// Takes a list of fully qualified type names and recursively gathers all of
+/// the items needed to fully define them.
+pub struct Gatherer<'names, 'r> {
+    reader: &'r Reader<'r>,
+    interfaces: &'names InterfaceMap,
+    items: BTreeMap<&'names str, Item>,
 }
 
-fn collect_nested(
-    reader: &Reader,
-    interfaces: &InterfaceMap,
-    td: TypeDef,
-    ri: Impls,
-    set: &mut BTreeMap<Type, Impls>,
-) {
-    for nested in reader.nested_types(td) {
-        collect_nested(reader, interfaces, nested, ri, set);
+impl<'names, 'r> Gatherer<'names, 'r> {
+    pub fn new(
+        reader: &'r Reader<'r>,
+        items: impl Iterator<Item = (&'names str, Item)>,
+        interfaces: &'names InterfaceMap,
+    ) -> Self {
+        Self {
+            reader,
+            interfaces,
+            items: items
+                .chain(
+                    interfaces
+                        .keys()
+                        .map(|iname| (iname.as_str(), Default::default())),
+                )
+                .collect(),
+        }
+    }
 
-        for field in reader.type_def_fields(nested) {
-            let ty = reader.field_type(field, Some(nested));
-            if let Type::TypeDef((def, _)) = &ty {
-                // Skip the fields that actually refer to the anonymous nested
-                // type, otherwise it will get added to the typeset and emitted
-                if reader.type_def_namespace(*def).is_empty() {
+    pub fn gather(self) -> ItemSet {
+        let mut types = BTreeMap::new();
+        let mut functions = BTreeSet::new();
+        let mut constants = BTreeSet::new();
+
+        let reader = self.reader;
+
+        for (name, item) in &self.items {
+            let type_name = reader::TypeName::parse(name);
+
+            let mut found = false;
+
+            if matches!(item.dis, Disambiguate::Any | Disambiguate::Record) {
+                for def in reader.get(type_name) {
+                    self.collect(&Type::TypeDef((def, vec![])), &mut types);
+                    found = true;
+                }
+            }
+
+            if found {
+                continue;
+            }
+
+            if matches!(item.dis, Disambiguate::Any | Disambiguate::Function) {
+                for method in reader
+                    .namespace_functions(type_name.namespace)
+                    .filter(|method| reader.method_def_name(*method) == type_name.name)
+                {
+                    functions.insert(method);
+                    let signature = reader.method_def_signature(method, &[]);
+                    signature
+                        .return_type
+                        .iter()
+                        .for_each(|ty| self.collect(ty, &mut types));
+                    signature
+                        .params
+                        .iter()
+                        .for_each(|param| self.collect(&param.ty, &mut types));
+                    found = true;
+                }
+            }
+
+            if found || !matches!(item.dis, Disambiguate::Any | Disambiguate::Constant) {
+                continue;
+            }
+
+            if let Some(field) = reader
+                .namespace_constants(type_name.namespace)
+                .find(|field| reader.field_name(*field) == type_name.name)
+            {
+                constants.insert(field);
+                self.collect(&reader.field_type(field, None), &mut types);
+            }
+
+            if let Some(field) = reader
+                .namespace_types(type_name.namespace, &Default::default())
+                .find_map(|def| {
+                    if reader.type_def_kind(def) == TypeKind::Enum {
+                        return reader
+                            .type_def_fields(def)
+                            .find(|field| reader.field_name(*field) == type_name.name);
+                    }
+                    None
+                })
+            {
+                constants.insert(field);
+                self.collect(&reader.field_type(field, None), &mut types);
+            }
+        }
+
+        self.fixup_impls(&mut types);
+
+        ItemSet {
+            types,
+            functions,
+            constants,
+        }
+    }
+
+    fn collect(&self, ty: &Type, collected: &mut BTreeMap<Type, Impls>) {
+        // Get the underlying type, the pointers are irrelevant
+        let ty = match ty {
+            Type::MutPtr((ty, _))
+            | Type::ConstPtr((ty, _))
+            | Type::Win32Array((ty, _))
+            | Type::WinrtArray(ty)
+            | Type::WinrtArrayRef(ty)
+            | Type::WinrtConstRef(ty) => &ty,
+            _ => ty,
+        };
+
+        if collected.contains_key(ty) {
+            return;
+        }
+
+        collected.insert(ty.clone(), Impls::default());
+
+        let Type::TypeDef((def, generics)) = ty else { return; };
+        let def = *def;
+        let reader = self.reader;
+
+        // Ensure that we get _all_ the types that match
+        let type_name = reader.type_def_type_name(def);
+        if !type_name.namespace.is_empty() {
+            for row in reader.get(type_name) {
+                if def != row {
+                    self.collect(&Type::TypeDef((row, Vec::new())), collected);
+                }
+            }
+        }
+
+        for generic in generics {
+            self.collect(&generic, collected);
+        }
+
+        for field in reader.type_def_fields(def) {
+            let ty = reader.field_type(field, Some(def));
+            if let Type::TypeDef((fdef, _)) = &ty {
+                if reader.type_def_namespace(*fdef).is_empty() {
                     continue;
                 }
-
-                collect(reader, interfaces, &ty, ri, set);
             }
+
+            self.collect(&ty, collected);
+        }
+
+        let kind = reader.type_def_kind(def);
+        let ty_name = reader.type_def_name(def);
+
+        let methods = if kind == TypeKind::Interface {
+            let Some(im) = self.interfaces.get(ty_name) else { return; };
+            Some(im)
+        } else {
+            None
+        };
+
+        for method in reader.type_def_methods(def) {
+            // Skip delegate pseudo-constructors.
+            let name = reader.method_def_name(method);
+            if name == ".ctor" {
+                continue;
+            }
+
+            if let Some(m) = &methods {
+                if !m.contains(name) {
+                    tracing::debug!("skipping {ty_name}::{name}");
+                    continue;
+                }
+            }
+
+            let sig = reader.method_def_signature(method, generics);
+            if let Some(rt) = &sig.return_type {
+                self.collect(rt, collected);
+            }
+            for param in &sig.params {
+                self.collect(&param.ty, collected);
+            }
+        }
+
+        for interface in reader.type_interfaces(&ty) {
+            self.collect(&interface.ty, collected);
+        }
+
+        if kind == TypeKind::Struct
+            && reader.type_def_fields(def).next().is_none()
+            && reader.type_def_guid(def).is_some()
+        {
+            collected.insert(Type::GUID, Impls::empty());
+        }
+
+        self.collect_nested(def, collected);
+    }
+
+    fn collect_nested(&self, td: TypeDef, collected: &mut BTreeMap<Type, Impls>) {
+        let reader = self.reader;
+        for nested in reader.nested_types(td) {
+            self.collect_nested(nested, collected);
+
+            for field in reader.type_def_fields(nested) {
+                let ty = reader.field_type(field, Some(nested));
+                if let Type::TypeDef((def, _)) = &ty {
+                    // Skip the fields that actually refer to the anonymous nested
+                    // type, otherwise it will get added to the typeset and emitted
+                    if reader.type_def_namespace(*def).is_empty() {
+                        continue;
+                    }
+
+                    self.collect(&ty, collected);
+                }
+            }
+        }
+    }
+
+    /// Recursively adds implementations based upon the requested implementations
+    /// for root items.
+    ///
+    /// We _could_ do this while collecting types, but it's kind of annoying and
+    /// easier to just do it in a separate fixup pass
+    fn fixup_impls(&self, collected: &mut BTreeMap<Type, Impls>) {
+        for (name, impls) in self
+            .items
+            .iter()
+            .filter_map(|(name, item)| (!item.ri.is_empty()).then_some((*name, item.ri)))
+        {
+            let type_name = reader::TypeName::parse(name);
+
+            for def in self.reader.get(type_name) {
+                self.fill_impls(Type::TypeDef((def, Vec::new())), impls, collected);
+            }
+        }
+    }
+
+    fn fill_impls(&self, ty: Type, impls: Impls, collected: &mut BTreeMap<Type, Impls>) {
+        let ty = match ty {
+            // We can skip fields that are behind a pointer
+            Type::MutPtr(_) | Type::ConstPtr(_) => return,
+            Type::Win32Array((ty, _))
+            | Type::WinrtArray(ty)
+            | Type::WinrtArrayRef(ty)
+            | Type::WinrtConstRef(ty) => *ty,
+            _ => ty,
+        };
+
+        let Type::TypeDef((def, _generics)) = &ty else { return; };
+        let def = *def;
+        let reader = self.reader;
+
+        if let Some(imp) = collected.get_mut(&ty) {
+            if imp.contains(impls) {
+                // If all of the flags are already present we don't need to recurse the type
+                return;
+            }
+
+            imp.insert(impls);
+        }
+
+        for field in reader.type_def_fields(def) {
+            let ty = reader.field_type(field, Some(def));
+            if let Type::TypeDef((fdef, _)) = &ty {
+                if reader.type_def_namespace(*fdef).is_empty() {
+                    continue;
+                }
+            }
+
+            self.fill_impls(ty, impls, collected);
+        }
+
+        self.fill_impls_nested(def, impls, collected);
+    }
+
+    fn fill_impls_nested(&self, td: TypeDef, impls: Impls, collected: &mut BTreeMap<Type, Impls>) {
+        let reader = self.reader;
+        for nested in reader.nested_types(td) {
+            self.fill_impls_nested(nested, impls, collected);
+            self.fill_impls(Type::TypeDef((nested, Vec::new())), impls, collected);
         }
     }
 }
@@ -159,7 +324,7 @@ bitflags::bitflags! {
     }
 }
 
-#[derive(Default, Copy, Clone)]
+#[derive(Default, Copy, Clone, Debug)]
 pub struct Item {
     pub dis: Disambiguate,
     pub ri: Impls,
@@ -196,7 +361,7 @@ impl Item {
                 let mut ri = Impls::empty();
 
                 for imp in bname[i + 1..].split('+') {
-                    let ri = match imp {
+                    match imp {
                         "Copy" => ri.insert(Impls::COPY),
                         "Clone" => ri.insert(Impls::CLONE),
                         unknown => {
@@ -216,107 +381,5 @@ impl Item {
                 ))
             }
         }
-    }
-}
-
-/// Takes a list of fully qualified type names and recursively gathers all of
-/// the items needed to fully define them.
-pub fn gather_items<'names>(
-    reader: &Reader,
-    interfaces: &'names InterfaceMap,
-    names: impl Iterator<Item = (&'names str, Item)>,
-) -> ItemSet {
-    let mut types = BTreeMap::new();
-    let mut functions = BTreeSet::new();
-    let mut constants = BTreeSet::new();
-
-    for (name, item) in names.chain(
-        interfaces
-            .keys()
-            .map(|iname| (iname.as_str(), Default::default())),
-    ) {
-        let type_name = reader::TypeName::parse(name);
-
-        let mut found = false;
-
-        if matches!(item.dis, Disambiguate::Any | Disambiguate::Record) {
-            for def in reader.get(type_name) {
-                collect(
-                    reader,
-                    interfaces,
-                    &Type::TypeDef((def, vec![])),
-                    item.ri,
-                    &mut types,
-                );
-                found = true;
-            }
-        }
-
-        if found {
-            continue;
-        }
-
-        if matches!(item.dis, Disambiguate::Any | Disambiguate::Function) {
-            for method in reader
-                .namespace_functions(type_name.namespace)
-                .filter(|method| reader.method_def_name(*method) == type_name.name)
-            {
-                functions.insert(method);
-                let signature = reader.method_def_signature(method, &[]);
-                signature
-                    .return_type
-                    .iter()
-                    .for_each(|ty| collect(reader, interfaces, ty, Impls::empty(), &mut types));
-                signature.params.iter().for_each(|param| {
-                    collect(reader, interfaces, &param.ty, Impls::empty(), &mut types)
-                });
-                found = true;
-            }
-        }
-
-        if found || !matches!(item.dis, Disambiguate::Any | Disambiguate::Constant) {
-            continue;
-        }
-
-        if let Some(field) = reader
-            .namespace_constants(type_name.namespace)
-            .find(|field| reader.field_name(*field) == type_name.name)
-        {
-            constants.insert(field);
-            collect(
-                reader,
-                interfaces,
-                &reader.field_type(field, None),
-                Impls::empty(),
-                &mut types,
-            );
-        }
-
-        if let Some(field) = reader
-            .namespace_types(type_name.namespace, &Default::default())
-            .find_map(|def| {
-                if reader.type_def_kind(def) == TypeKind::Enum {
-                    return reader
-                        .type_def_fields(def)
-                        .find(|field| reader.field_name(*field) == type_name.name);
-                }
-                None
-            })
-        {
-            constants.insert(field);
-            collect(
-                reader,
-                interfaces,
-                &reader.field_type(field, None),
-                Impls::empty(),
-                &mut types,
-            );
-        }
-    }
-
-    ItemSet {
-        types,
-        functions,
-        constants,
     }
 }
