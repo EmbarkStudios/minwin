@@ -10,6 +10,7 @@ use windows_metadata::reader as wmr;
 pub type InterfaceMap = std::collections::BTreeMap<String, BTreeSet<String>>;
 
 /// All of the unique items gathered based on a root list of names
+#[derive(Clone)]
 pub struct ItemSet {
     /// Set of structs, unions, interfaces, classes, enums, type aliases, and function pointers
     pub types: BTreeMap<wmr::Type, Impls>,
@@ -128,33 +129,131 @@ pub struct Items {
     pub interfaces: Bucket<wmr::TypeDef>,
 }
 
-pub fn bind(
-    items: Vec<String>,
+/// Determines the style used to emit extern functions from Win32
+#[derive(Copy, Clone, PartialEq, Eq, Default, serde::Deserialize)]
+pub enum LinkingStyle {
+    /// Emits normal `#[link(name = "<dll>")]` extern blocks collated by dynamic
+    /// library.
+    ///
+    /// There are exactly 5 non-dll dynamic libraries in the Win32 bindings, this
+    /// style won't work with them, and you will get a panic about it
+    #[default]
+    Normal,
+    /// Emits 1 `windows_targets::link!` per extern function
+    WindowsTargets,
+    /// Emits extern blocks similarly to [`Self::Normal`], except each one is
+    /// `kind = "raw-dylib"`.
+    ///
+    /// This allows linking without needing import libs, but requires 1.65 for
+    /// `x86_64` and `aarch64`, and is currently unstable on `x86`, though will
+    /// be stable in (presumably) 1.71 <https://github.com/rust-lang/rust/pull/109677>
+    RawDylib,
+}
+
+#[derive(serde::Deserialize)]
+pub enum BindConfig {
+    /// Uses `windows-bindgen` to generate bindings.
+    ///
+    /// This option gives limited configuration and no way to inspect the number
+    /// and types of items emitted. Requires `rustfmt` is installed.
+    ///
+    /// Use this if you want the "official" bindings.
+    Bindgen,
+    /// Uses `minwin` to generate bindings.
+    ///
+    /// This option allows for various customizations to be applied to the
+    /// emitted bindings, as well as complete introspection on all of the emitted
+    /// items
+    Minwin {
+        linking_style: LinkingStyle,
+        /// If true, the `windows-core` crate is used for various core types
+        /// such as `HRESULT`
+        use_core: bool,
+        /// If true, identifiers are fixed to remove pointless Hungarian notation
+        fix_naming: bool,
+        /// If true, the casing of all items will be changed to follow Rust casing conventions
+        use_rust_casing: bool,
+        /// If true, formats the output
+        pretty_print: bool,
+    },
+}
+
+pub struct BindOutput {
+    /// The full set of generated bindings
+    pub bindings: String,
+    /// The full set of items that were emitted. Not available if [`BindConfig::Bindgen`] is used.
+    pub items: Option<BTreeMap<String, Items>>,
+}
+
+pub fn bind<S: Into<String>>(
+    names: impl IntoIterator<Item = S>,
     interfaces: BTreeMap<String, BTreeSet<String>>,
-) -> anyhow::Result<(String, BTreeMap<String, Items>)> {
+    config: BindConfig,
+) -> anyhow::Result<BindOutput> {
+    let names: Vec<_> = names.into_iter().map(|n| n.into()).collect();
     anyhow::ensure!(
-        !items.is_empty(),
+        !names.is_empty() || !interfaces.is_empty(),
         "1 or more items must be specified to bind"
     );
 
     let files = &wmr::File::with_default(&[]).unwrap();
     let reader = &wmr::Reader::new(files);
 
-    let names = qualify_items(reader, items)?;
+    let items = qualify_items(reader, names)?;
     let ifaces = interfaces
         .into_par_iter()
         .map(|(name, methods)| qualify_item(reader, name).map(|(name, _)| (name, methods)))
         .collect::<anyhow::Result<BTreeMap<_, _>>>()?;
 
     anyhow::ensure!(
-        !names.is_empty() || !ifaces.is_empty(),
+        !items.is_empty() || !ifaces.is_empty(),
         "unable to locate any items to bind"
     );
 
-    let items = gather::gather_items(reader, &ifaces, names.iter().map(|(n, i)| (n.as_str(), *i)));
+    match config {
+        BindConfig::Bindgen => {
+            let items: Vec<_> = items
+                .iter()
+                .map(|(n, _i)| n.as_str())
+                .chain(ifaces.keys().map(|k| k.as_str()))
+                .collect();
+            Ok(BindOutput {
+                bindings: windows_bindgen::standalone(&items),
+                items: None,
+            })
+        }
+        BindConfig::Minwin {
+            linking_style,
+            use_core,
+            fix_naming,
+            use_rust_casing,
+            pretty_print,
+        } => {
+            let gatherer =
+                gather::Gatherer::new(reader, items.iter().map(|(n, i)| (n.as_str(), *i)), &ifaces);
+            let items = gatherer.gather();
 
+            let emit = emit::Emit {
+                items,
+                reader,
+                ifaces,
+                layouts: Some(emit::load_clang_layouts()),
+                linking_style,
+                use_core,
+                fix_naming,
+                use_rust_casing,
+                pretty_print,
+            };
+
+            do_minwin(emit)
+        }
+    }
+}
+
+pub fn do_minwin(emit: emit::Emit<'_>) -> anyhow::Result<BindOutput> {
     // Gather stats now that we have all of the items we want to emit
     let mut ns_items = BTreeMap::<String, Items>::new();
+    let reader = emit.reader;
 
     let index_namespace = |name: &str, ns_items: &mut BTreeMap<String, Items>| {
         assert!(
@@ -191,7 +290,7 @@ pub fn bind(
                 wmr::TypeKind::Class | wmr::TypeKind::Interface => {
                     let ty_name = reader.type_def_name(ty);
                     let qname = format!("{name}.{ty_name}");
-                    if ifaces.contains_key(&qname) {
+                    if emit.ifaces.contains_key(&qname) {
                         interfaces.insert(ty);
                     } else {
                         aliases.insert(wmr::Type::TypeDef((ty, Vec::new())));
@@ -212,7 +311,7 @@ pub fn bind(
         ns_items.insert(name.to_owned(), items);
     };
 
-    for func in items.functions.iter().cloned() {
+    for func in emit.items.functions.iter().cloned() {
         let items = match ns_items
             .iter_mut()
             .find(|(_ns, items)| items.functions.has(&func))
@@ -237,7 +336,7 @@ pub fn bind(
         items.functions.inc();
     }
 
-    for constant in items.constants.iter().cloned() {
+    for constant in emit.items.constants.iter().cloned() {
         let items = match ns_items
             .iter_mut()
             .find(|(_ns, items)| items.constants.has(&constant))
@@ -266,7 +365,7 @@ pub fn bind(
         items.constants.inc();
     }
 
-    for ty in items.types.keys() {
+    for ty in emit.items.types.keys() {
         // Just ignore the core types, they're not a big deal
         let wmr::Type::TypeDef((td, _)) = &ty else { continue; };
         let td = *td;
@@ -289,7 +388,7 @@ pub fn bind(
             wmr::TypeKind::Class | wmr::TypeKind::Interface => {
                 let ty_name = reader.type_def_name(td);
                 let qname = format!("{ns}.{ty_name}");
-                if ifaces.contains_key(&qname) {
+                if emit.ifaces.contains_key(&qname) {
                     items.interfaces.inc();
                 } else {
                     items.aliases.inc();
@@ -299,19 +398,10 @@ pub fn bind(
         }
     }
 
-    let emit = emit::Emit {
-        items,
-        reader,
-        ifaces,
-        layouts: Some(emit::load_clang_layouts()),
-        link_targets: false,
-        use_core: false,
-        fix_naming: false,
-        use_rust_casing: false,
-        pretty_print: true,
-    };
-
     let bindings = emit.emit()?;
 
-    Ok((bindings, ns_items))
+    Ok(BindOutput {
+        bindings,
+        items: Some(ns_items),
+    })
 }

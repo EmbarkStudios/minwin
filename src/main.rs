@@ -1,6 +1,7 @@
 use anyhow::Context as _;
 use camino::Utf8PathBuf as PathBuf;
 use clap::Parser;
+use minwin::bind::BindConfig;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Parser, Clone)]
@@ -54,7 +55,7 @@ fn main() -> anyhow::Result<()> {
     let opts = Cmd::parse();
 
     match opts.cmd {
-        SubCmd::Generate(opts) => {
+        SubCmd::Generate(_opts) => {
             //generate(opts)?;
         }
         SubCmd::Bind(opts) => {
@@ -157,6 +158,7 @@ fn search(opts: Search) -> anyhow::Result<()> {
 #[derive(serde::Deserialize)]
 struct Config {
     output: PathBuf,
+    bind_config: BindConfig,
     binds: Vec<String>,
     interfaces: BTreeMap<String, BTreeSet<String>>,
 }
@@ -175,7 +177,7 @@ fn bind(opts: Bind) -> anyhow::Result<()> {
 
     let has_interfaces = !cfg.interfaces.is_empty();
 
-    let (bound, items) = minwin::bind(cfg.binds, cfg.interfaces)?;
+    let bind_output = minwin::bind(cfg.binds, cfg.interfaces, cfg.bind_config)?;
 
     let out_path = if cfg.output.as_str().starts_with('$') {
         unreachable!()
@@ -185,8 +187,15 @@ fn bind(opts: Bind) -> anyhow::Result<()> {
         cfg.output
     };
 
-    std::fs::write(&out_path, bound)
+    std::fs::write(&out_path, bind_output.bindings)
         .with_context(|| format!("failed to write bindings to '{out_path}'"))?;
+
+    let Some(items) = bind_output.items else {
+        tracing::info!("`windows-bindgen` bindings emitted");
+        return Ok(());
+    };
+
+    tracing::info!("`minwin` bindings emitted");
 
     // Now that we're done, emit the stats to let the user know exactly how
     // much was emitted

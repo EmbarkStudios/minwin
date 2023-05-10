@@ -405,6 +405,7 @@ dependencies = [
  "tracing-subscriber",
  "ustr",
  "walkdir",
+ "windows-bindgen",
  "windows-metadata",
  "zstd",
 ]
@@ -947,6 +948,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f"
 
 [[package]]
+name = "windows-bindgen"
+version = "0.49.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6935fb09b84ee57929ae92518b475f5dfdfbeb87c5334756acc28ee8e202b60"
+dependencies = [
+ "windows-metadata",
+ "windows-tokens",
+]
+
+[[package]]
 name = "windows-metadata"
 version = "0.49.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -990,6 +1001,12 @@ dependencies = [
  "windows_x86_64_gnullvm",
  "windows_x86_64_msvc",
 ]
+
+[[package]]
+name = "windows-tokens"
+version = "0.48.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b34c9a3b28cb41db7385546f7f9a8179348dffc89923dde66857b1ba5312f6b4"
 
 [[package]]
 name = "windows_aarch64_gnullvm"

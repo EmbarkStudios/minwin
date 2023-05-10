@@ -26,10 +26,8 @@ pub struct Emit<'r> {
     /// We collect additional layout information not currently present in the
     /// the metadata to supplement it
     pub layouts: Option<&'static BTreeMap<String, ArchLayouts>>,
-    /// If true, use the `windows-targets::link!` macro to link functions,
-    /// otherwise functions are collated in extern blocks and linked with the
-    /// appropriate dll
-    pub link_targets: bool,
+    /// The linking style to use for extern functions
+    pub linking_style: super::LinkingStyle,
     /// If true, the `windows-core` crate is
     pub use_core: bool,
     /// If true, identifiers are fixed to remove pointless Hungarian notation
@@ -43,9 +41,16 @@ pub struct Emit<'r> {
 impl<'r> Emit<'r> {
     pub fn emit(self) -> anyhow::Result<String> {
         let mut os = OutputStream::new();
+
+        if !self.use_rust_casing {
+            os.root.extend(quote! {
+                #![allow(non_snake_case, non_upper_case_globals, non_camel_case_types)]
+            });
+        }
+
         let reader = self.reader;
 
-        for ty in self.items.types.keys().cloned() {
+        for (ty, impls) in &self.items.types {
             if !self.use_core && !matches!(ty, Type::TypeDef(..)) {
                 let (ident, ts) = match ty {
                     Type::HRESULT => {
@@ -122,7 +127,7 @@ impl<'r> Emit<'r> {
                     }
                 };
 
-                os.insert_type(ty, ident, ts);
+                os.insert_type(ty.clone(), ident, ts);
             } else if let Type::TypeDef((td, _)) = &ty {
                 let def = *td;
                 let kind = reader.type_def_kind(def);
@@ -168,25 +173,25 @@ impl<'r> Emit<'r> {
                         // sorted.insert(gen.reader.type_def_name(def), enums::gen(gen, def));
                     }
                     TypeKind::Struct => {
-                        self.emit_record(&mut os, def)?;
+                        self.emit_record(&mut os, def, *impls)?;
                         continue;
                     }
                     TypeKind::Delegate => self.emit_function_pointer(def)?,
                 };
 
-                os.insert_type(ty, ident, ts);
+                os.insert_type(ty.clone(), ident, ts);
             }
         }
 
         for constant in &self.items.constants {
-            self.emit_constant(&mut os, *constant);
+            self.emit_constant(&mut os, *constant)?;
         }
 
         for func in &self.items.functions {
             self.emit_func(&mut os, *func);
         }
 
-        let ts = os.finalize(self.link_targets);
+        let ts = os.finalize(self.linking_style);
 
         if self.pretty_print {
             let file = syn::parse2(ts).context("unable to parse output as a valid Rust file")?;
