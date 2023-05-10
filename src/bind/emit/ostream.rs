@@ -12,7 +12,7 @@ pub struct OutputStream {
     /// The top level BTreeMap is overkill but the entry() API is too good
     arch_blocks: BTreeMap<u8, BTreeMap<pm::Ident, TokenStream>>,
     enums: BTreeMap<TypeDef, TokenStream>,
-    constants: BTreeMap<Field, (pm::Ident, TokenStream)>,
+    constants: BTreeMap<Ident, TokenStream>,
     types: BTreeMap<Ident, (Type, Option<TokenStream>)>,
     functions: BTreeMap<(Ustr, bool), BTreeMap<Ident, (MethodDef, TokenStream)>>,
 }
@@ -76,8 +76,8 @@ impl OutputStream {
     }
 
     #[inline]
-    pub fn insert_constant(&mut self, field: Field, ident: Ident, ts: TokenStream) {
-        self.constants.insert(field, (ident, ts));
+    pub fn insert_constant(&mut self, ident: Ident, ts: TokenStream) {
+        self.constants.insert(ident, ts);
     }
 
     #[inline]
@@ -127,6 +127,11 @@ impl OutputStream {
                     }
                 });
             }
+        }
+
+
+        for cts in self.constants.into_values() {
+            root.extend(cts);
         }
 
         for (_ident, (_ty, ts)) in self.types {

@@ -75,12 +75,27 @@ impl<'names, 'r> Gatherer<'names, 'r> {
                 continue;
             }
 
+            let field_type = |row: reader::Field| -> Type {
+                let ft = reader.field_type(row, None);
+
+                // Normally, this would be an HSTRING, but not for constants
+                if ft == Type::String {
+                    return if reader.field_is_ansi(row) {
+                        Type::PCSTR
+                    } else {
+                        Type::PCWSTR
+                    };
+                }
+
+                ft
+            };
+
             if let Some(field) = reader
                 .namespace_constants(type_name.namespace)
                 .find(|field| reader.field_name(*field) == type_name.name)
             {
                 constants.insert(field);
-                self.collect(&reader.field_type(field, None), &mut types);
+                self.collect(&field_type(field), &mut types);
             }
 
             if let Some(field) = reader
@@ -95,7 +110,7 @@ impl<'names, 'r> Gatherer<'names, 'r> {
                 })
             {
                 constants.insert(field);
-                self.collect(&reader.field_type(field, None), &mut types);
+                self.collect(&field_type(field), &mut types);
             }
         }
 

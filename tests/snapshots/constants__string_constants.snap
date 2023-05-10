@@ -1,0 +1,27 @@
+---
+source: tests/constants.rs
+expression: bo.bindings
+---
+#![allow(non_snake_case, non_upper_case_globals, non_camel_case_types)]
+/// "AddressFamily"
+pub const ADDRESS_FAMILY_VALUE_NAME: PCWSTR = [
+    65,
+    100,
+    100,
+    114,
+    101,
+    115,
+    115,
+    70,
+    97,
+    109,
+    105,
+    108,
+    121,
+    0,
+]
+    .as_ptr();
+pub const JOY_CONFIGCHANGED_MSGSTRING: PCSTR = b"MSJSTICK_VJOYD_MSGSTR\0".as_ptr();
+pub type PCSTR = *const u8;
+pub type PCWSTR = *const u16;
+

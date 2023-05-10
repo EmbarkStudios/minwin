@@ -28,7 +28,22 @@ impl<'r> super::Emit<'r> {
                     constant_type
                 });
 
+                // For utf-16 strings, add a doc comment on the comment so the
+                // user knows exactly what the string's actual value is
+                let string_value = if value.is_wide_str {
+                    let wmr::Value::String(s) = &value.val else {
+                        anyhow::bail!("constant {name} says it is a wide string...but it's not actually a string at all");
+                    };
+
+                    let s = format!(" \"{s}\"");
+
+                    Some(quote! { #[doc = #s] })
+                } else {
+                    None
+                };
+
                 Some(quote! {
+                    #string_value
                     pub const #name: #typename = #value;
                 })
             } else {
@@ -60,7 +75,7 @@ impl<'r> super::Emit<'r> {
         };
 
         if let Some(ts) = ts {
-            os.insert_constant(def, name, ts);
+            os.insert_constant(name, ts);
         }
 
         Ok(())

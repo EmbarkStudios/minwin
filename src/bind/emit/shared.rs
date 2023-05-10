@@ -148,9 +148,7 @@ impl ToTokens for Value {
                 if self.is_wide_str {
                     let lits = s.encode_utf16().map(|u| Literal::u16_unsuffixed(u));
 
-                    // We emit a doc comment so that the user knows what the string's value is
                     ts.extend(quote! {
-                        #[doc = #s]
                         [#(#lits),*].as_ptr()
                     });
                 } else {
