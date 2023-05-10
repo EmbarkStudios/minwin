@@ -1,25 +1,77 @@
-use super::shared::Attrs;
+use crate::bind::{
+    emit::shared::{to_ident, Attrs, IdentKind, Value},
+    EnumStyle,
+};
 use proc_macro2::{self as pm, Ident, TokenStream};
 use quote::{format_ident, quote};
-use std::collections::BTreeMap;
+use std::{
+    cmp,
+    collections::{BTreeMap, BTreeSet},
+};
 use ustr::Ustr;
-use windows_metadata::reader::{Field, MethodDef, Type, TypeDef};
+use windows_metadata::reader::{MethodDef, Reader, Type, TypeDef};
 
-pub struct OutputStream {
+use super::shared::TypePrinter;
+
+struct EnumConstant {
+    name: Ident,
+    value: Value,
+}
+
+impl cmp::Eq for EnumConstant {}
+
+impl cmp::PartialEq for EnumConstant {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == cmp::Ordering::Equal
+    }
+}
+
+impl cmp::Ord for EnumConstant {
+    fn cmp(&self, other: &Self) -> cmp::Ordering {
+        match self.value.cmp(&other.value) {
+            cmp::Ordering::Equal => self.name.cmp(&other.name),
+            ord => ord,
+        }
+    }
+}
+
+impl cmp::PartialOrd for EnumConstant {
+    fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+struct EnumBlock {
+    /// The core type of the enum eg i32/u32
+    ty: Type,
+    /// The unique constants, note that they can be unique by name, but not value
+    constants: BTreeSet<EnumConstant>,
+}
+
+impl EnumBlock {
+    #[inline]
+    fn insert(&mut self, ec: EnumConstant) {
+        self.constants.insert(ec);
+    }
+}
+
+pub struct OutputStream<'r> {
+    reader: &'r Reader<'r>,
     pub(crate) root: TokenStream,
     /// Blocks of items partitioned by `target_arch`.
     ///
     /// The top level BTreeMap is overkill but the entry() API is too good
     arch_blocks: BTreeMap<u8, BTreeMap<pm::Ident, TokenStream>>,
-    enums: BTreeMap<TypeDef, TokenStream>,
+    enums: BTreeMap<TypeDef, EnumBlock>,
     constants: BTreeMap<Ident, TokenStream>,
     types: BTreeMap<Ident, (Type, Option<TokenStream>)>,
     functions: BTreeMap<(Ustr, bool), BTreeMap<Ident, (MethodDef, TokenStream)>>,
 }
 
-impl OutputStream {
-    pub fn new() -> Self {
+impl<'r> OutputStream<'r> {
+    pub fn new(reader: &'r Reader<'r>) -> Self {
         Self {
+            reader,
             root: TokenStream::new(),
             arch_blocks: BTreeMap::new(),
             enums: BTreeMap::new(),
@@ -48,31 +100,19 @@ impl OutputStream {
         }
     }
 
-    /// When outputting actual enums, we wrap them in a module, so that the
-    /// constants are accessible similarly to a regular Rust enum, but still
-    /// keep the flexibility of not needing to worry about things like multiple
-    /// constants with the same value etc
-    ///
-    /// ```rust
-    /// pub mod enum_name {
-    ///     pub type Enum = u32;
-    ///     pub const VARIANT: Enum = 1;
-    /// }
-    /// ```
-    #[inline]
-    pub fn get_enum_block(&mut self, def: TypeDef, emit: &super::Emit<'_>) -> &mut TokenStream {
-        self.enums.entry(def).or_insert_with(|| {
-            let kind = emit.type_printer(emit.reader.type_def_underlying_type(def));
-
-            quote! {
-                pub type Enum = #kind;
-            }
-        })
-    }
-
     #[inline]
     pub fn insert_type(&mut self, ty: Type, ident: Ident, ts: TokenStream) {
         self.types.insert(ident, (ty, Some(ts)));
+    }
+
+    #[inline]
+    pub fn insert_enum_constant(&mut self, def: TypeDef, name: Ident, value: Value) {
+        let enum_block = self.enums.entry(def).or_insert_with(|| EnumBlock {
+            ty: self.reader.type_def_underlying_type(def),
+            constants: BTreeSet::new(),
+        });
+
+        enum_block.insert(EnumConstant { name, value });
     }
 
     #[inline]
@@ -95,7 +135,12 @@ impl OutputStream {
             .insert(ident, (func, ts));
     }
 
-    pub fn finalize(self, linking_style: crate::bind::LinkingStyle) -> TokenStream {
+    pub fn finalize(
+        self,
+        linking_style: crate::bind::LinkingStyle,
+        enum_style: EnumStyle,
+        use_rust_casing: bool,
+    ) -> TokenStream {
         let mut root = self.root;
 
         for ((lib, is_system), functions) in self.functions {
@@ -129,6 +174,69 @@ impl OutputStream {
             }
         }
 
+        let reader = self.reader;
+
+        let enum_blocks: BTreeMap<_, _> = self
+            .enums
+            .into_iter()
+            .map(|(td, eb)| {
+                let name = reader.type_def_name(td);
+
+                let ident_kind = match enum_style {
+                    EnumStyle::Bindgen => IdentKind::Type,
+                    EnumStyle::Minwin => IdentKind::Enum,
+                };
+
+                let ident = to_ident(name, ident_kind, use_rust_casing, false);
+
+                let typ = TypePrinter {
+                    r: self.reader,
+                    ty: eb.ty,
+                    use_rust_casing,
+                    use_windows_core: false, // irrelevant for enums
+                };
+
+                let mut ts = TokenStream::new();
+
+                match enum_style {
+                    EnumStyle::Bindgen => {
+                        ts.extend(quote! {
+                            pub type #ident = #typ;
+                        });
+
+                        for ec in eb.constants {
+                            let name = ec.name;
+                            let val = ec.value;
+                            ts.extend(quote! {
+                                pub const #name: #ident = #val;
+                            });
+                        }
+                    }
+                    EnumStyle::Minwin => {
+                        let constants = eb.constants.into_iter().map(|ec| {
+                            let name = ec.name;
+                            let val = ec.value;
+                            quote! {
+                                pub const #name: Enum = #val;
+                            }
+                        });
+
+                        ts.extend(quote! {
+                            pub mod #ident {
+                                pub type Enum = #typ;
+                                #(#constants)*
+                            }
+                        });
+                    }
+                }
+
+                (ident, ts)
+            })
+            .collect();
+
+        for enum_block in enum_blocks.into_values() {
+            root.extend(enum_block);
+        }
 
         for cts in self.constants.into_values() {
             root.extend(cts);

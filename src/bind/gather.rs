@@ -110,7 +110,7 @@ impl<'names, 'r> Gatherer<'names, 'r> {
                 })
             {
                 constants.insert(field);
-                self.collect(&field_type(field), &mut types);
+                self.collect(&reader.field_type(field, None), &mut types);
             }
         }
 

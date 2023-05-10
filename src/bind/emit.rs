@@ -173,18 +173,7 @@ impl<'r> Emit<'r> {
                         (ident, ts)
                     }
                     TypeKind::Enum => {
-                        unreachable!()
-                        // let ident = self.to_ident(name, IdentKind::Enum);
-                        // self.emit_enum(&mut os, reader, def);
-
-                        // let ts = if self.use_core {
-
-                        // } else {
-                        //     quote!{ pub type #ident = *mut ::core::ffi::c_void; }
-                        // };
-
-                        // (ident, ts)
-                        // sorted.insert(gen.reader.type_def_name(def), enums::gen(gen, def));
+                        continue;
                     }
                     TypeKind::Struct => {
                         self.emit_record(&mut os, def, *impls)?;
@@ -205,7 +194,7 @@ impl<'r> Emit<'r> {
             self.emit_func(&mut os, *func);
         }
 
-        let ts = os.finalize(self.linking_style);
+        let ts = os.finalize(self.linking_style, self.enum_style, self.use_rust_casing);
 
         if self.pretty_print {
             let file = syn::parse2(ts).context("unable to parse output as a valid Rust file")?;

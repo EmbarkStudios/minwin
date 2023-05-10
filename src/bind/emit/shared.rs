@@ -2,7 +2,7 @@ use crate::bind::Impls;
 use pm::Ident;
 use proc_macro2::{self as pm, TokenStream};
 use quote::{format_ident, quote, ToTokens, TokenStreamExt};
-use std::fmt;
+use std::{cmp, fmt};
 use windows_metadata::reader::{self as wmr, Type};
 
 #[derive(Copy, Clone)]
@@ -90,6 +90,42 @@ impl From<wmr::Value> for Value {
     }
 }
 
+impl cmp::Eq for Value {}
+
+impl cmp::PartialEq for Value {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == cmp::Ordering::Equal
+    }
+}
+
+impl cmp::Ord for Value {
+    fn cmp(&self, other: &Self) -> cmp::Ordering {
+        use wmr::Value as Val;
+        match (&self.val, &other.val) {
+            (Val::I32(a), Val::I32(b)) => a.cmp(b),
+            (Val::U32(a), Val::U32(b)) => a.cmp(b),
+            (Val::I16(a), Val::I16(b)) => a.cmp(b),
+            (Val::U16(a), Val::U16(b)) => a.cmp(b),
+            (Val::I64(a), Val::I64(b)) => a.cmp(b),
+            (Val::U64(a), Val::U64(b)) => a.cmp(b),
+            (Val::I8(a), Val::I8(b)) => a.cmp(b),
+            (Val::U8(a), Val::U8(b)) => a.cmp(b),
+            (Val::F32(a), Val::F32(b)) => a.total_cmp(b),
+            (Val::F64(a), Val::F64(b)) => a.total_cmp(b),
+            (Val::Bool(a), Val::Bool(b)) => a.cmp(b),
+            (_, _) => {
+                unreachable!("the type should be the same when comparing, or else an invalid value type leaked through");
+            }
+        }
+    }
+}
+
+impl cmp::PartialOrd for Value {
+    fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 impl fmt::Debug for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use wmr::Value;
@@ -106,20 +142,20 @@ impl fmt::Debug for Value {
             Value::F32(v) => write!(f, "{v}: f32"),
             Value::F64(v) => write!(f, "{v}: f64"),
             Value::String(s) => f.write_str(s),
-            Value::Enum(_td, v) => {
-                use windows_metadata::reader::Integer;
-                match v {
-                    Integer::I8(v) => write!(f, "{v}: enum i8"),
-                    Integer::U8(v) => write!(f, "{v}: enum u8"),
-                    Integer::I16(v) => write!(f, "{v}: enum i16"),
-                    Integer::U16(v) => write!(f, "{v}: enum u16"),
-                    Integer::I32(v) => write!(f, "{v}: enum i32"),
-                    Integer::U32(v) => write!(f, "{v}: enum u32"),
-                    Integer::I64(v) => write!(f, "{v}: enum i64"),
-                    Integer::U64(v) => write!(f, "{v}: enum u64"),
-                }
-            }
-            Value::TypeDef(_td) => unreachable!("uhm...typedef"),
+            // Value::Enum(_td, v) => {
+            //     use windows_metadata::reader::Integer;
+            //     match v {
+            //         Integer::I8(v) => write!(f, "{v}: enum i8"),
+            //         Integer::U8(v) => write!(f, "{v}: enum u8"),
+            //         Integer::I16(v) => write!(f, "{v}: enum i16"),
+            //         Integer::U16(v) => write!(f, "{v}: enum u16"),
+            //         Integer::I32(v) => write!(f, "{v}: enum i32"),
+            //         Integer::U32(v) => write!(f, "{v}: enum u32"),
+            //         Integer::I64(v) => write!(f, "{v}: enum i64"),
+            //         Integer::U64(v) => write!(f, "{v}: enum u64"),
+            //     }
+            // }
+            Value::TypeDef(..) | Value::Enum(..) => unreachable!(),
         }
     }
 }
@@ -140,9 +176,6 @@ impl ToTokens for Value {
             Value::U32(i) => Literal::u32_unsuffixed(i),
             Value::I64(i) => Literal::i64_unsuffixed(i),
             Value::U64(i) => Literal::u64_unsuffixed(i),
-            Value::Enum(..) => {
-                unreachable!();
-            }
             Value::String(ref s) => {
                 let s = format!("{s}\0");
                 if self.is_wide_str {
@@ -160,7 +193,7 @@ impl ToTokens for Value {
 
                 return;
             }
-            Value::TypeDef(_td) => {
+            Value::TypeDef(..) | Value::Enum(..) => {
                 unreachable!("windows_metadata doesn't parse this...at least, it didn't")
             }
             Value::Bool(b) => {
@@ -192,10 +225,10 @@ impl<'r> ToTokens for Guid<'r> {
 }
 
 pub struct TypePrinter<'r> {
-    r: &'r wmr::Reader<'r>,
-    ty: wmr::Type,
-    use_rust_casing: bool,
-    use_windows_core: bool,
+    pub r: &'r wmr::Reader<'r>,
+    pub ty: wmr::Type,
+    pub use_rust_casing: bool,
+    pub use_windows_core: bool,
 }
 
 impl<'r> TypePrinter<'r> {
