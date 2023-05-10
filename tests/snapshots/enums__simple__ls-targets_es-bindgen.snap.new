@@ -1,0 +1,11 @@
+---
+source: tests/enums.rs
+assertion_line: 29
+expression: bo.bindings
+---
+#![allow(non_snake_case, non_upper_case_globals, non_camel_case_types)]
+pub type GENERIC_ACCESS_RIGHTS = u32;
+pub const GENERIC_ALL: GENERIC_ACCESS_RIGHTS = 268435456;
+pub const GENERIC_WRITE: GENERIC_ACCESS_RIGHTS = 1073741824;
+pub const GENERIC_READ: GENERIC_ACCESS_RIGHTS = 2147483648;
+

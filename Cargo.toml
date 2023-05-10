@@ -46,6 +46,13 @@ zstd = "0.12"
 
 [dev-dependencies]
 insta = "1.28"
+rstest = { version = "0.17", default-features = false }
+
+[profile.dev.package.insta]
+opt-level = 3
+
+[profile.dev.package.similar]
+opt-level = 3
 
 # [patch.crates-io]
 # windows-bindgen = { path = "../windows-rs/crates/libs/bindgen" }

@@ -91,7 +91,10 @@ pub fn qualify_items(
         .collect()
 }
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt,
+};
 pub struct Bucket<T> {
     pub items: BTreeSet<T>,
     pub num: u32,
@@ -150,6 +153,16 @@ pub enum LinkingStyle {
     RawDylib,
 }
 
+impl fmt::Display for LinkingStyle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Normal => f.write_str("normal"),
+            Self::WindowsTargets => f.write_str("targets"),
+            Self::RawDylib => f.write_str("rawdylib"),
+        }
+    }
+}
+
 /// Determines the style used to emit enums
 #[derive(Copy, Clone, PartialEq, Eq, Default, serde::Deserialize)]
 pub enum EnumStyle {
@@ -184,6 +197,15 @@ pub enum EnumStyle {
     /// }
     /// ```
     Minwin,
+}
+
+impl fmt::Display for EnumStyle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Bindgen => f.write_str("bindgen"),
+            Self::Minwin => f.write_str("minwin"),
+        }
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -234,6 +256,34 @@ pub enum BindConfig {
     /// emitted bindings, as well as complete introspection on all of the emitted
     /// items
     Minwin(MinwinBindConfig),
+}
+
+impl fmt::Display for BindConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Bindgen => f.write_str("bindgen"),
+            Self::Minwin(mwbc) => {
+                f.write_fmt(format_args!(
+                    "ls-{}_es-{}",
+                    mwbc.linking_style, mwbc.enum_style
+                ))?;
+
+                if mwbc.use_core {
+                    f.write_str("_core")?;
+                }
+
+                if mwbc.fix_naming {
+                    f.write_str("_fixnaming")?;
+                }
+
+                if mwbc.use_rust_casing {
+                    f.write_str("_rustcasing")?;
+                }
+
+                Ok(())
+            }
+        }
+    }
 }
 
 pub struct BindOutput {
