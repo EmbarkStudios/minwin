@@ -7,11 +7,49 @@ use minwin::bind;
 /// 4. Nested structs/unions
 #[test]
 fn complex() {
-    let bindings = bind::bind(
-        vec!["Windows.Win32.System.Diagnostics.Debug.RtlCaptureContext".to_owned()],
+    let bo = bind::bind(
+        ["Windows.Win32.System.Diagnostics.Debug.RtlCaptureContext"],
         Default::default(),
+        bind::BindConfig::Minwin {
+            linking_style: bind::LinkingStyle::WindowsTargets,
+            use_core: false,
+            fix_naming: false,
+            use_rust_casing: false,
+            pretty_print: true,
+        },
     )
     .expect("failed to bind");
 
-    insta::assert_snapshot!(bindings.0);
+    insta::assert_snapshot!(bo.bindings);
+
+    let bo = bind::bind(
+        ["Windows.Win32.System.Diagnostics.Debug.RtlCaptureContext"],
+        Default::default(),
+        bind::BindConfig::Bindgen,
+    )
+    .expect("failed to bind");
+
+    insta::assert_snapshot!(bo.bindings);
+}
+
+/// Ensures we can add Copy + Clone implementations to specific records
+#[test]
+fn copy_clone() {
+    let bo = bind::bind(
+        [
+            "Windows.Win32.System.Diagnostics.Debug.RtlCaptureContext",
+            "Windows.Win32.System.Diagnostics.Debug.CONTEXT+Copy",
+        ],
+        Default::default(),
+        bind::BindConfig::Minwin {
+            linking_style: bind::LinkingStyle::WindowsTargets,
+            use_core: false,
+            fix_naming: false,
+            use_rust_casing: false,
+            pretty_print: true,
+        },
+    )
+    .expect("failed to bind");
+
+    insta::assert_snapshot!(bo.bindings);
 }
