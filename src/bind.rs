@@ -137,9 +137,9 @@ pub enum LinkingStyle {
     ///
     /// There are exactly 5 non-dll dynamic libraries in the Win32 bindings, this
     /// style won't work with them, and you will get a panic about it
-    #[default]
     Normal,
     /// Emits 1 `windows_targets::link!` per extern function
+    #[default]
     WindowsTargets,
     /// Emits extern blocks similarly to [`Self::Normal`], except each one is
     /// `kind = "raw-dylib"`.
@@ -148,6 +148,75 @@ pub enum LinkingStyle {
     /// `x86_64` and `aarch64`, and is currently unstable on `x86`, though will
     /// be stable in (presumably) 1.71 <https://github.com/rust-lang/rust/pull/109677>
     RawDylib,
+}
+
+/// Determines the style used to emit enums
+#[derive(Copy, Clone, PartialEq, Eq, Default, serde::Deserialize)]
+pub enum EnumStyle {
+    /// Emits bindgen style enums
+    ///
+    /// ```
+    /// pub type ENUM_NAME = u32;
+    /// pub const ENUM_VALUE_ONE: ENUM_NAME = 1;
+    /// pub const ENUM_VALUE_TWO: ENUM_NAME = 2;
+    ///
+    /// fn function_that_takes_enum(enum_val: ENUM_NAME) {}
+    ///
+    /// fn main() {
+    ///     function_that_takes_enum(ENUM_VALUE_ONE);
+    /// }
+    /// ```
+    #[default]
+    Bindgen,
+    /// Emits minwin style enums
+    ///
+    /// ```
+    /// pub mod ENUM_NAME {
+    ///     pub type Enum = u32;
+    ///     pub const ENUM_VALUE_ONE: Enum = 1;
+    ///     pub const ENUM_VALUE_TWO: Enum = 2;
+    /// }
+    ///
+    /// fn function_that_takes_enum(enum_val: ENUM_NAME::Enum) {}
+    ///
+    /// fn main() {
+    ///     function_that_takes_enum(ENUM_NAME::ENUM_VALUE_ONE);
+    /// }
+    /// ```
+    Minwin,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct MinwinBindConfig {
+    pub linking_style: LinkingStyle,
+    pub enum_style: EnumStyle,
+    /// If true, the `windows-core` crate is used for various core types
+    /// such as `HRESULT`
+    pub use_core: bool,
+    /// If true, identifiers are fixed to remove pointless Hungarian notation
+    pub fix_naming: bool,
+    /// If true, the casing of all items will be changed to follow Rust casing conventions
+    pub use_rust_casing: bool,
+    /// If true, formats the output
+    pub pretty_print: bool,
+    /// If true, emits a version header at the beginning of the bindings
+    pub emit_version_header: bool,
+}
+
+impl Default for MinwinBindConfig {
+    fn default() -> Self {
+        Self {
+            linking_style: Default::default(),
+            enum_style: Default::default(),
+            use_core: false,
+            fix_naming: false,
+            use_rust_casing: false,
+            pretty_print: true,
+            // We don't want this in tests
+            emit_version_header: !cfg!(debug_assertions),
+        }
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -164,18 +233,7 @@ pub enum BindConfig {
     /// This option allows for various customizations to be applied to the
     /// emitted bindings, as well as complete introspection on all of the emitted
     /// items
-    Minwin {
-        linking_style: LinkingStyle,
-        /// If true, the `windows-core` crate is used for various core types
-        /// such as `HRESULT`
-        use_core: bool,
-        /// If true, identifiers are fixed to remove pointless Hungarian notation
-        fix_naming: bool,
-        /// If true, the casing of all items will be changed to follow Rust casing conventions
-        use_rust_casing: bool,
-        /// If true, formats the output
-        pretty_print: bool,
-    },
+    Minwin(MinwinBindConfig),
 }
 
 pub struct BindOutput {
@@ -222,13 +280,7 @@ pub fn bind<S: Into<String>>(
                 items: None,
             })
         }
-        BindConfig::Minwin {
-            linking_style,
-            use_core,
-            fix_naming,
-            use_rust_casing,
-            pretty_print,
-        } => {
+        BindConfig::Minwin(mwbc) => {
             let gatherer =
                 gather::Gatherer::new(reader, items.iter().map(|(n, i)| (n.as_str(), *i)), &ifaces);
             let items = gatherer.gather();
@@ -238,11 +290,13 @@ pub fn bind<S: Into<String>>(
                 reader,
                 ifaces,
                 layouts: Some(emit::load_clang_layouts()),
-                linking_style,
-                use_core,
-                fix_naming,
-                use_rust_casing,
-                pretty_print,
+                linking_style: mwbc.linking_style,
+                enum_style: mwbc.enum_style,
+                use_core: mwbc.use_core,
+                fix_naming: mwbc.fix_naming,
+                use_rust_casing: mwbc.use_rust_casing,
+                pretty_print: mwbc.pretty_print,
+                add_version_header: mwbc.emit_version_header,
             };
 
             do_minwin(emit)

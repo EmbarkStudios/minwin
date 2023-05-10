@@ -10,13 +10,7 @@ fn complex() {
     let bo = bind::bind(
         ["Windows.Win32.System.Diagnostics.Debug.RtlCaptureContext"],
         Default::default(),
-        bind::BindConfig::Minwin {
-            linking_style: bind::LinkingStyle::WindowsTargets,
-            use_core: false,
-            fix_naming: false,
-            use_rust_casing: false,
-            pretty_print: true,
-        },
+        bind::BindConfig::Minwin(Default::default()),
     )
     .expect("failed to bind");
 
@@ -41,13 +35,7 @@ fn copy_clone() {
             "Windows.Win32.System.Diagnostics.Debug.CONTEXT+Copy",
         ],
         Default::default(),
-        bind::BindConfig::Minwin {
-            linking_style: bind::LinkingStyle::WindowsTargets,
-            use_core: false,
-            fix_naming: false,
-            use_rust_casing: false,
-            pretty_print: true,
-        },
+        bind::BindConfig::Minwin(Default::default()),
     )
     .expect("failed to bind");
 
