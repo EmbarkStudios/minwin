@@ -1,7 +1,12 @@
 use super::*;
 
 impl<'r> super::Emit<'r> {
-    pub(super) fn emit_record(&self, os: &mut OutputStream, rec: TypeDef) -> anyhow::Result<()> {
+    pub(super) fn emit_record(
+        &self,
+        os: &mut OutputStream,
+        rec: TypeDef,
+        impls: Impls,
+    ) -> anyhow::Result<()> {
         let reader = self.reader;
 
         let attrs = self.attributes(reader.type_def_attributes(rec));
@@ -41,7 +46,7 @@ impl<'r> super::Emit<'r> {
         }
 
         let mut ts = TokenStream::new();
-        self.emit_rec(rec, &ident, &mut ts)?;
+        self.emit_rec(rec, &ident, impls, &mut ts)?;
         os.insert_record(rec, ident, attrs, ts);
 
         Ok(())
@@ -51,11 +56,14 @@ impl<'r> super::Emit<'r> {
         &self,
         rec: TypeDef,
         ident: &pm::Ident,
+        impls: Impls,
         ts: &mut TokenStream,
     ) -> anyhow::Result<()> {
         let reader = self.reader;
 
         // Check for opaque types that are only used via pointer
+        // Note that we don't care about Copy/Clone for these as they will
+        // always only be used by pointer
         if reader.type_def_fields(rec).count() == 0 {
             tracing::trace!("found opaque struct '{ident}'");
             ts.extend(quote! {
@@ -124,22 +132,25 @@ impl<'r> super::Emit<'r> {
                 KINDS
                     .as_ref()
                     .map(|(s, u)| if is_union { u } else { s })
-                    .expect("failed to deserialize layouts")
+                    .expect("impossible")
             }
         }
 
         let rec_kind = rec_kind(is_union);
+        let implsp = self.impls(&ident, impls);
 
         ts.extend(quote! {
             #repr
             pub #rec_kind #ident {
                 #(#fields),*
             }
+
+            #implsp
         });
 
         for (i, nested) in reader.nested_types(rec).enumerate() {
             let nested_ident = quote::format_ident!("{ident}_{i}");
-            self.emit_rec(nested, &nested_ident, ts)?;
+            self.emit_rec(nested, &nested_ident, impls, ts)?;
         }
 
         Ok(())

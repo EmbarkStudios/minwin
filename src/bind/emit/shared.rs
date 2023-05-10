@@ -7,6 +7,7 @@ use windows_metadata::reader::{self as wmr, Type};
 
 #[derive(Copy, Clone)]
 pub(super) enum IdentKind<'res> {
+    #[allow(dead_code)]
     Const,
     Enum,
     Field,
@@ -240,7 +241,24 @@ struct Ptrs(usize, bool);
 
 impl ToTokens for Ptrs {
     fn to_tokens(&self, ts: &mut TokenStream) {
-        let tok = if self.1 { "*mut" } else { "*const" };
+        fn tok(is_mut: bool) -> &'static TokenStream {
+            use std::sync::Once;
+
+            static INIT: Once = Once::new();
+            static mut KINDS: Option<(TokenStream, TokenStream)> = None;
+
+            unsafe {
+                INIT.call_once(|| {
+                    KINDS = Some((quote! { *mut }, quote! { *const }));
+                });
+                KINDS
+                    .as_ref()
+                    .map(|(m, c)| if is_mut { m } else { c })
+                    .expect("impossible")
+            }
+        }
+
+        let tok = tok(self.1);
         ts.append_separated((0..self.0).map(|_| tok), ' ');
     }
 }
@@ -292,10 +310,28 @@ impl<'r> ToTokens for TypePrinter<'r> {
                 return;
             }
             Type::TypeDef((def, _generics)) => {
-                let name = self.r.type_def_name(*def);
+                // Handled nested records
+                fn scoped_name<'r>(
+                    reader: &'r wmr::Reader<'r>,
+                    td: wmr::TypeDef,
+                ) -> std::borrow::Cow<'r, str> {
+                    let name = reader.type_def_name(td);
+                    if let Some(enclosing_type) = reader.type_def_enclosing_type(td) {
+                        for (index, nested_type) in reader.nested_types(enclosing_type).enumerate()
+                        {
+                            if reader.type_def_name(nested_type) == name {
+                                return format!("{}_{index}", scoped_name(reader, enclosing_type))
+                                    .into();
+                            }
+                        }
+                    }
 
+                    std::borrow::Cow::Borrowed(name)
+                }
+
+                let name = scoped_name(self.r, *def);
                 if !self.use_rust_casing {
-                    name
+                    ts.append(format_ident!("{name}"));
                 } else {
                     use wmr::TypeKind;
                     let kind = match self.r.type_def_kind(*def) {
@@ -306,10 +342,11 @@ impl<'r> ToTokens for TypePrinter<'r> {
                         TypeKind::Enum => IdentKind::Enum,
                     };
 
-                    let ident = to_ident(name, kind, self.use_rust_casing, false);
+                    let ident = to_ident(&name, kind, self.use_rust_casing, false);
                     ts.append(ident);
-                    return;
                 }
+
+                return;
             }
             Type::MutPtr((ty, pointers)) => {
                 let ptrs = Ptrs(*pointers, true);
@@ -380,25 +417,17 @@ bitflags::bitflags! {
         const X86 = 1 << 0;
         const X86_64 = 1 << 1;
         const AARCH64 = 1 << 2;
-
-        const COPY_CLONE = 1 << 3;
-        const UNION = 1 << 4;
-        const DEPRECATED = 1 << 5;
-
-        const ARCH = Attrs::X86.bits() | Attrs::X86_64.bits() | Attrs::AARCH64.bits();
     }
 }
 
 impl ToTokens for Attrs {
     fn to_tokens(&self, ts: &mut TokenStream) {
-        let arch = self.intersection(Attrs::ARCH);
-
-        if arch.is_empty() {
+        if self.is_empty() {
             return;
         }
 
-        let count = arch.iter().count();
-        let arches = arch.iter().map(|a| {
+        let count = self.iter().count();
+        let arches = self.iter().map(|a| {
             if a.contains(Attrs::X86) {
                 "x86"
             } else if a.contains(Attrs::X86_64) {
@@ -483,7 +512,7 @@ pub struct ArchLayouts(Vec<ArchLayout>);
 impl ArchLayouts {
     #[inline]
     pub fn get_layout(&self, attrs: Attrs) -> RecordLayout {
-        let arches = attrs.intersection(Attrs::ARCH).bits();
+        let arches = attrs.bits();
 
         if arches == 0 || self.0[0].a == 0 {
             RecordLayout::Agnostic(self.0[0].l)
@@ -598,7 +627,7 @@ impl<'r> super::Emit<'r> {
                     }
                 }
                 "DeprecatedAttribute" => {
-                    attrs.insert(Attrs::DEPRECATED);
+                    //attrs.insert(Attrs::DEPRECATED);
                 }
                 _ => {}
             }
