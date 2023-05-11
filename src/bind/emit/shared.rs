@@ -239,11 +239,11 @@ impl<'r> TypePrinter<'r> {
         const CORE_TYPES: &[(&'static str, &'static str)] = &[
             ("::windows_core::BSTR", "Bstr"),
             ("::windows_core::Guid", "Guid"),
-            ("::windows_core::HRESULT", "HResult"),
-            ("::windows_core::PCSTR", "PCStr"),
-            ("::windows_core::PCWSTR", "PCWstr"),
-            ("::windows_core::PSTR", "PStr"),
-            ("::windows_core::PWSTR", "PWstr"),
+            ("::windows_core::HRESULT", "Hresult"),
+            ("::windows_core::PCSTR", "Pcstr"),
+            ("::windows_core::PCWSTR", "Pcwstr"),
+            ("::windows_core::PSTR", "Pstr"),
+            ("::windows_core::PWSTR", "Pwstr"),
         ];
 
         if !self.config.use_core && !self.config.use_rust_casing {

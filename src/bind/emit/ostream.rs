@@ -3,7 +3,7 @@ use crate::bind::{
     EnumStyle,
 };
 use proc_macro2::{self as pm, Ident, TokenStream};
-use quote::{format_ident, quote};
+use quote::{format_ident, quote, ToTokens};
 use std::{
     cmp,
     collections::{BTreeMap, BTreeSet},
@@ -62,7 +62,7 @@ pub struct OutputStream<'r> {
     ///
     /// The top level BTreeMap is overkill but the entry() API is too good
     arch_blocks: BTreeMap<u8, BTreeMap<pm::Ident, TokenStream>>,
-    enums: BTreeMap<TypeDef, EnumBlock>,
+    enums: BTreeMap<Type, EnumBlock>,
     constants: BTreeMap<Ident, TokenStream>,
     types: BTreeMap<Ident, (Type, Option<TokenStream>)>,
     functions: BTreeMap<(Ustr, bool), BTreeMap<(Ident, Attrs), (MethodDef, TokenStream)>>,
@@ -106,10 +106,17 @@ impl<'r> OutputStream<'r> {
     }
 
     #[inline]
-    pub fn insert_enum_constant(&mut self, def: TypeDef, name: Ident, value: Value) {
-        let enum_block = self.enums.entry(def).or_insert_with(|| EnumBlock {
-            ty: self.reader.type_def_underlying_type(def),
-            constants: BTreeSet::new(),
+    pub fn insert_enum_constant(&mut self, ty: Type, name: Ident, value: Value) {
+        let enum_block = self.enums.entry(ty.clone()).or_insert_with(|| {
+            let ty = if let Type::TypeDef((def, _)) = &ty {
+                self.reader.type_def_underlying_type(*def)
+            } else {
+                ty
+            };
+            EnumBlock {
+                ty,
+                constants: BTreeSet::new(),
+            }
         });
 
         enum_block.insert(EnumConstant { name, value });
@@ -175,8 +182,27 @@ impl<'r> OutputStream<'r> {
         let enum_blocks: BTreeMap<_, _> = self
             .enums
             .into_iter()
-            .map(|(td, eb)| {
-                let name = reader.type_def_name(td);
+            .map(|(ty, eb)| {
+                let Type::TypeDef((td, _)) = &ty else {
+                    let typ = TypePrinter {
+                        r: self.reader,
+                        ty,
+                        config,
+                    };
+
+                    let mut ts = TokenStream::new();
+                    for ec in eb.constants {
+                        let name = ec.name;
+                        let val = ec.value;
+                        ts.extend(quote! {
+                            pub const #name: #typ = #val;
+                        });
+                    }
+
+                    return (typ.into_token_stream().to_string(), ts);
+                };
+
+                let name = reader.type_def_name(*td);
 
                 let ident_kind = match config.enum_style {
                     EnumStyle::Bindgen => IdentKind::Type,
@@ -225,7 +251,7 @@ impl<'r> OutputStream<'r> {
                     }
                 }
 
-                (ident, ts)
+                (ident.to_string(), ts)
             })
             .collect();
 

@@ -49,8 +49,7 @@ impl<'r> super::Emit<'r> {
                     pub const #name: #typename = #value;
                 })
             } else {
-                let Type::TypeDef((def, _)) = ty else { anyhow::bail!("constant '{name}' is not a typedef...") };
-                os.insert_enum_constant(def, name, value);
+                os.insert_enum_constant(ty, name, value);
                 return Ok(());
             }
         } else if let Some(value) = reader.field_guid(def) {

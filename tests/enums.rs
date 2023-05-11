@@ -27,3 +27,22 @@ test!(
         "Windows.Win32.Storage.FileSystem.ReadLogNotification",
     ]
 );
+
+// Ensures we can emit enums that use core types instead of a typedef
+test!(
+    core,
+    [
+        BindConfig::Minwin(Default::default()),
+        BindConfig::Minwin(MinwinBindConfig {
+            enum_style: EnumStyle::Minwin,
+            ..Default::default()
+        }),
+        BindConfig::Minwin(MinwinBindConfig {
+            enum_style: EnumStyle::Minwin,
+            use_rust_casing: true,
+            ..Default::default()
+        }),
+        BindConfig::Bindgen,
+    ],
+    ["Windows.Win32.Foundation.S_OK"]
+);
