@@ -14,7 +14,9 @@ impl<'r> super::Emit<'r> {
             "WinRT delegates are not supported"
         );
 
-        let ident = self.to_ident(reader.type_def_name(fp), IdentKind::FunctionPointer);
+        let ident = self
+            .config
+            .make_ident(reader.type_def_name(fp), IdentKind::FunctionPointer);
 
         let meth = reader.type_def_invoke_method(fp);
         let sig = reader.method_def_signature(meth, &[]);

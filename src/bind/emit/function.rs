@@ -6,7 +6,7 @@ impl<'r> Emit<'r> {
         let sig = reader.method_def_signature(meth, &[]);
 
         let name = reader.method_def_name(sig.def);
-        let ident = self.to_ident(name, IdentKind::Function);
+        let ident = self.config.make_ident(name, IdentKind::Function);
 
         let attrs = self.attributes(reader.method_def_attributes(meth));
         let params = self.param_printer(&sig);
@@ -33,15 +33,15 @@ impl<'r> Emit<'r> {
         let abi = reader.method_def_extern_abi(meth);
         let is_system = abi == "system";
 
-        let ts = if self.linking_style == crate::bind::LinkingStyle::WindowsTargets {
-            let symbol = (self.use_rust_casing || symbol != name).then_some(symbol);
+        let ts = if self.config.linking_style == crate::bind::LinkingStyle::WindowsTargets {
+            let symbol = (self.config.use_rust_casing || symbol != name).then_some(symbol);
 
             quote! {
                 #attrs
                 ::windows_targets::link!(#module #abi #symbol fn #ident(#params)#ret);
             }
         } else {
-            let link_name = (self.use_rust_casing || symbol != name).then(|| {
+            let link_name = (self.config.use_rust_casing || symbol != name).then(|| {
                 quote! {
                     #[link_name = #symbol]
                 }

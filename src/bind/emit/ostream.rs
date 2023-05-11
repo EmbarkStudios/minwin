@@ -1,5 +1,5 @@
 use crate::bind::{
-    emit::shared::{to_ident, Attrs, IdentKind, Value},
+    emit::shared::{Attrs, IdentKind, Value},
     EnumStyle,
 };
 use proc_macro2::{self as pm, Ident, TokenStream};
@@ -136,16 +136,11 @@ impl<'r> OutputStream<'r> {
             .insert((ident, attrs), (func, ts));
     }
 
-    pub fn finalize(
-        self,
-        linking_style: crate::bind::LinkingStyle,
-        enum_style: EnumStyle,
-        use_rust_casing: bool,
-    ) -> TokenStream {
+    pub fn finalize(self, config: crate::bind::MinwinBindConfig) -> TokenStream {
         let mut root = self.root;
 
         for ((lib, is_system), functions) in self.functions {
-            if linking_style == crate::bind::LinkingStyle::WindowsTargets {
+            if config.linking_style == crate::bind::LinkingStyle::WindowsTargets {
                 for (_, func_ts) in functions.into_values() {
                     root.extend(func_ts);
                 }
@@ -155,7 +150,7 @@ impl<'r> OutputStream<'r> {
 
                 let funcs = functions.into_values().map(|(_, f)| f);
 
-                let link = if linking_style == crate::bind::LinkingStyle::RawDylib {
+                let link = if config.linking_style == crate::bind::LinkingStyle::RawDylib {
                     if let Some(lib) = lib.strip_suffix(".dll") {
                         quote! { #[link(name = #lib, kind = "raw-dylib")] }
                     } else {
@@ -183,23 +178,22 @@ impl<'r> OutputStream<'r> {
             .map(|(td, eb)| {
                 let name = reader.type_def_name(td);
 
-                let ident_kind = match enum_style {
+                let ident_kind = match config.enum_style {
                     EnumStyle::Bindgen => IdentKind::Type,
                     EnumStyle::Minwin => IdentKind::Enum,
                 };
 
-                let ident = to_ident(name, ident_kind, use_rust_casing, false);
+                let ident = config.make_ident(name, ident_kind);
 
                 let typ = TypePrinter {
                     r: self.reader,
                     ty: eb.ty,
-                    use_rust_casing,
-                    use_windows_core: false, // irrelevant for enums
+                    config,
                 };
 
                 let mut ts = TokenStream::new();
 
-                match enum_style {
+                match config.enum_style {
                     EnumStyle::Bindgen => {
                         ts.extend(quote! {
                             pub type #ident = #typ;

@@ -208,10 +208,12 @@ impl fmt::Display for EnumStyle {
     }
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, Copy, Clone)]
 #[serde(rename_all = "kebab-case")]
 pub struct MinwinBindConfig {
+    /// The linking style to use for extern functions
     pub linking_style: LinkingStyle,
+    /// The style of enums emitted, affects both declaration and usage
     pub enum_style: EnumStyle,
     /// If true, the `windows-core` crate is used for various core types
     /// such as `HRESULT`
@@ -223,7 +225,7 @@ pub struct MinwinBindConfig {
     /// If true, formats the output
     pub pretty_print: bool,
     /// If true, emits a version header at the beginning of the bindings
-    pub emit_version_header: bool,
+    pub add_version_header: bool,
 }
 
 impl Default for MinwinBindConfig {
@@ -236,7 +238,7 @@ impl Default for MinwinBindConfig {
             use_rust_casing: false,
             pretty_print: true,
             // We don't want this in tests
-            emit_version_header: !cfg!(debug_assertions),
+            add_version_header: !cfg!(debug_assertions),
         }
     }
 }
@@ -330,7 +332,7 @@ pub fn bind<S: Into<String>>(
                 items: None,
             })
         }
-        BindConfig::Minwin(mwbc) => {
+        BindConfig::Minwin(config) => {
             let gatherer =
                 gather::Gatherer::new(reader, items.iter().map(|(n, i)| (n.as_str(), *i)), &ifaces);
             let items = gatherer.gather();
@@ -340,13 +342,7 @@ pub fn bind<S: Into<String>>(
                 reader,
                 ifaces,
                 layouts: Some(emit::load_clang_layouts()),
-                linking_style: mwbc.linking_style,
-                enum_style: mwbc.enum_style,
-                use_core: mwbc.use_core,
-                fix_naming: mwbc.fix_naming,
-                use_rust_casing: mwbc.use_rust_casing,
-                pretty_print: mwbc.pretty_print,
-                add_version_header: mwbc.emit_version_header,
+                config,
             };
 
             do_minwin(emit)

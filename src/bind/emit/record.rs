@@ -10,7 +10,9 @@ impl<'r> super::Emit<'r> {
         let reader = self.reader;
 
         let attrs = self.attributes(reader.type_def_attributes(rec));
-        let ident = self.to_ident(reader.type_def_name(rec), IdentKind::Record);
+        let ident = self
+            .config
+            .make_ident(reader.type_def_name(rec), IdentKind::Record);
 
         if reader.type_def_fields(rec).next().is_none() {
             if let Some(value) = reader.type_def_guid(rec) {
@@ -97,7 +99,9 @@ impl<'r> super::Emit<'r> {
                 return None;
             }
 
-            let fname = self.to_ident(reader.field_name(f), IdentKind::Field);
+            let fname = self
+                .config
+                .make_ident(reader.field_name(f), IdentKind::Field);
             let ty = reader.field_type(f, Some(rec));
 
             // Unlike windows-bindgen, we don't unconditionally emit Copy/Clone for

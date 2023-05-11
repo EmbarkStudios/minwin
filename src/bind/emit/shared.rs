@@ -1,4 +1,4 @@
-use crate::bind::Impls;
+use crate::bind::{Impls, MinwinBindConfig};
 use pm::Ident;
 use proc_macro2::{self as pm, TokenStream};
 use quote::{format_ident, quote, ToTokens, TokenStreamExt};
@@ -49,30 +49,33 @@ impl<'res> IdentKind<'res> {
     }
 }
 
-#[rustfmt::skip]
-pub(super) fn to_ident(name: &str, kind: IdentKind, use_rust_casing: bool, fix_naming: bool) -> pm::Ident {
-    let mut is = if use_rust_casing {
-        kind.convert(&name, fix_naming)
-    } else {
-        name.to_owned()
-    };
-
-    // keywords list based on https://doc.rust-lang.org/reference/keywords.html
-    if matches!(
-        is.as_str(),
-        "abstract" | "as" | "become" | "box" | "break" | "const" | "continue" |
-        "crate" | "do" | "else" | "enum" | "extern" | "false" | "final" | "fn" |
-        "for" | "if" | "impl" | "in" | "let" | "loop" | "macro" | "match" | "mod" |
-        "move" | "mut" | "override" | "priv" | "pub" | "ref" | "return" | "static" |
-        "struct" | "super" | "trait" | "true" | "type" | "typeof" | "unsafe" |
-        "unsized" | "use" | "virtual" | "where" | "while" | "yield" | "try" |
-        "async" | "await" | "dyn" | "self" | "Self"
-    ) {
-        is.push('_');
+impl crate::bind::MinwinBindConfig {
+    #[rustfmt::skip]
+    pub(super) fn make_ident(&self, name: &str, kind: IdentKind) -> pm::Ident {
+        let mut is = if self.use_rust_casing {
+            kind.convert(&name, self.fix_naming)
+        } else {
+            name.to_owned()
+        };
+    
+        // keywords list based on https://doc.rust-lang.org/reference/keywords.html
+        if matches!(
+            is.as_str(),
+            "abstract" | "as" | "become" | "box" | "break" | "const" | "continue" |
+            "crate" | "do" | "else" | "enum" | "extern" | "false" | "final" | "fn" |
+            "for" | "if" | "impl" | "in" | "let" | "loop" | "macro" | "match" | "mod" |
+            "move" | "mut" | "override" | "priv" | "pub" | "ref" | "return" | "static" |
+            "struct" | "super" | "trait" | "true" | "type" | "typeof" | "unsafe" |
+            "unsized" | "use" | "virtual" | "where" | "while" | "yield" | "try" |
+            "async" | "await" | "dyn" | "self" | "Self"
+        ) {
+            is.push('_');
+        }
+    
+        format_ident!("{is}")
     }
-
-    format_ident!("{is}")
 }
+
 
 pub struct Value {
     pub val: wmr::Value,
@@ -227,8 +230,7 @@ impl<'r> ToTokens for Guid<'r> {
 pub struct TypePrinter<'r> {
     pub r: &'r wmr::Reader<'r>,
     pub ty: wmr::Type,
-    pub use_rust_casing: bool,
-    pub use_windows_core: bool,
+    pub config: MinwinBindConfig,
 }
 
 impl<'r> TypePrinter<'r> {
@@ -244,14 +246,14 @@ impl<'r> TypePrinter<'r> {
             ("::windows_core::PWSTR", "PWstr"),
         ];
 
-        if !self.use_windows_core && !self.use_rust_casing {
+        if !self.config.use_core && !self.config.use_rust_casing {
             name
         } else {
             CORE_TYPES
                 .iter()
                 .find_map(|(n, g)| {
                     let us = &n[16..];
-                    (us == name).then_some(if self.use_windows_core { n } else { g })
+                    (us == name).then_some(if self.config.use_core { n } else { g })
                 })
                 .expect("unknown core type")
         }
@@ -262,8 +264,7 @@ impl<'r> TypePrinter<'r> {
         Self {
             r: self.r,
             ty,
-            use_rust_casing: self.use_rust_casing,
-            use_windows_core: self.use_rust_casing,
+            config: self.config,
         }
     }
 }
@@ -323,7 +324,7 @@ impl<'r> ToTokens for TypePrinter<'r> {
             Type::HRESULT => self.core_type("HRESULT"),
             Type::GUID => self.core_type("GUID"),
             Type::IUnknown => {
-                if self.use_windows_core {
+                if self.config.use_core {
                     ts.extend(quote! { ::windows_core::IUnknown });
                     return;
                 } else {
@@ -331,7 +332,7 @@ impl<'r> ToTokens for TypePrinter<'r> {
                 }
             }
             Type::IInspectable => {
-                if self.use_windows_core {
+                if self.config.use_core {
                     ts.extend(quote! { ::windows_core::IInspectable });
                     return;
                 } else {
@@ -347,41 +348,64 @@ impl<'r> ToTokens for TypePrinter<'r> {
             }
             Type::TypeDef((def, _generics)) => {
                 // Handled nested records
-                fn scoped_name<'r>(
+                fn record_suffix<'r>(
                     reader: &'r wmr::Reader<'r>,
                     td: wmr::TypeDef,
-                ) -> std::borrow::Cow<'r, str> {
+                    suffix: &mut String,
+                ) -> &'r str {
                     let name = reader.type_def_name(td);
-                    if let Some(enclosing_type) = reader.type_def_enclosing_type(td) {
-                        for (index, nested_type) in reader.nested_types(enclosing_type).enumerate()
-                        {
-                            if reader.type_def_name(nested_type) == name {
-                                return format!("{}_{index}", scoped_name(reader, enclosing_type))
-                                    .into();
-                            }
+                    let Some(enclosing_type) = reader.type_def_enclosing_type(td) else { return name; };
+
+                    for (index, nested_type) in reader.nested_types(enclosing_type).enumerate() {
+                        if reader.type_def_name(nested_type) == name {
+                            let name = record_suffix(reader, enclosing_type, suffix);
+                            // Unwrap is ok, it would only fail on OOM which could
+                            // presumably end badly anywhere else in the code
+                            std::fmt::write(suffix, format_args!("_{index}")).unwrap();
+                            return name;
                         }
                     }
 
-                    std::borrow::Cow::Borrowed(name)
+                    name
                 }
 
-                let name = scoped_name(self.r, *def);
-                if !self.use_rust_casing {
-                    ts.append(format_ident!("{name}"));
-                } else {
-                    use wmr::TypeKind;
-                    let kind = match self.r.type_def_kind(*def) {
-                        TypeKind::Struct | TypeKind::Class | TypeKind::Interface => {
-                            IdentKind::Record
+                let def = *def;
+                let reader = self.r;
+
+                let name = reader.type_def_name(def);
+                let td_kind = reader.type_def_kind(def);
+
+                use wmr::TypeKind;
+                let enum_suffix = (matches!(td_kind, TypeKind::Enum)
+                    && self.config.enum_style == crate::bind::EnumStyle::Minwin)
+                    .then(|| {
+                        quote! { ::Enum }
+                    });
+
+                let ident = match td_kind {
+                    TypeKind::Struct => {
+                        let mut suffix = String::new();
+                        let name = record_suffix(reader, def, &mut suffix);
+                        format_ident!("{}{suffix}", self.config.make_ident(name, IdentKind::Record))
+                    }
+                    TypeKind::Class | TypeKind::Interface => {
+                        self.config.make_ident(name, IdentKind::Record)
+                    }
+                    TypeKind::Delegate => {
+                        self.config.make_ident(name, IdentKind::FunctionPointer)
+                    }
+                    TypeKind::Enum => {
+                        let ident = self.config.make_ident(name, IdentKind::Enum);
+                        if self.config.enum_style == crate::bind::EnumStyle::Minwin {
+                            ts.extend(quote! { #ident #enum_suffix });
+                            return;
                         }
-                        TypeKind::Delegate => IdentKind::FunctionPointer,
-                        TypeKind::Enum => IdentKind::Enum,
-                    };
 
-                    let ident = to_ident(&name, kind, self.use_rust_casing, false);
-                    ts.append(ident);
-                }
+                        ident
+                    }
+                };
 
+                ts.append(ident);
                 return;
             }
             Type::MutPtr((ty, pointers)) => {
@@ -419,25 +443,17 @@ impl<'r> ToTokens for TypePrinter<'r> {
 pub(crate) struct ParamsPrinter<'r, 's> {
     sig: &'s wmr::Signature,
     r: &'r wmr::Reader<'r>,
-    use_rust_casing: bool,
-    use_windows_core: bool,
-    fix_naming: bool,
+    config: MinwinBindConfig,
 }
 
 impl<'r, 's> ToTokens for ParamsPrinter<'r, 's> {
     fn to_tokens(&self, ts: &mut TokenStream) {
         let params = self.sig.params.iter().map(|param| {
-            let pname = to_ident(
-                self.r.param_name(param.def),
-                IdentKind::Param,
-                self.use_rust_casing,
-                self.fix_naming,
-            );
+            let pname = self.config.make_ident(self.r.param_name(param.def), IdentKind::Param);
             let ty = TypePrinter {
                 ty: param.ty.clone(),
                 r: self.r,
-                use_rust_casing: self.use_rust_casing,
-                use_windows_core: self.use_windows_core,
+                config: self.config,
             };
 
             quote! { #pname: #ty }
@@ -611,8 +627,7 @@ impl<'r> super::Emit<'r> {
         TypePrinter {
             r: self.reader,
             ty,
-            use_rust_casing: self.use_rust_casing,
-            use_windows_core: self.use_core,
+            config: self.config,
         }
     }
 
@@ -623,8 +638,7 @@ impl<'r> super::Emit<'r> {
             printer: TypePrinter {
                 r: self.reader,
                 ty: Type::GUID,
-                use_rust_casing: self.use_rust_casing,
-                use_windows_core: self.use_core,
+                config: self.config,
             },
         }
     }
@@ -634,9 +648,7 @@ impl<'r> super::Emit<'r> {
         ParamsPrinter {
             sig,
             r: self.reader,
-            use_rust_casing: self.use_rust_casing,
-            use_windows_core: self.use_core,
-            fix_naming: self.fix_naming,
+            config: self.config,
         }
     }
 

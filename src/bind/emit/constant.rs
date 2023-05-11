@@ -3,14 +3,16 @@ use super::*;
 impl<'r> super::Emit<'r> {
     pub(super) fn emit_constant(&self, os: &mut OutputStream, def: Field) -> anyhow::Result<()> {
         let reader = self.reader;
-        let name = self.to_ident(reader.field_name(def), IdentKind::Variant(None));
+        let name = self
+            .config
+            .make_ident(reader.field_name(def), IdentKind::Variant(None));
         let ty = reader.field_type(def, None).to_const_type();
 
         let ts = if let Some(constant) = reader.field_constant(def) {
             let constant_type = reader.constant_type(constant);
             let value = Value {
                 val: reader.constant_value(constant),
-                is_wide_str: !reader.field_is_ansi(def),
+                is_wide_str: matches!(constant_type, Type::String) && !reader.field_is_ansi(def),
             };
 
             if ty == constant_type {
