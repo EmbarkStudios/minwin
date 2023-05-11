@@ -260,6 +260,12 @@ pub enum BindConfig {
     Minwin(MinwinBindConfig),
 }
 
+impl Default for BindConfig {
+    fn default() -> Self {
+        Self::Minwin(Default::default())
+    }
+}
+
 impl fmt::Display for BindConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
