@@ -307,7 +307,10 @@ impl<'r> ToTokens for TypePrinter<'r> {
             Type::I8 => "i8",
             Type::F32 => "f32",
             Type::F64 => "f64",
-            Type::Void => "::core::ffi::c_void",
+            Type::Void => {
+                ts.extend(quote! { ::core::ffi::c_void });
+                return;
+            }
             Type::ISize => "isize",
             Type::USize => "usize",
             Type::Char => "u16",
@@ -321,14 +324,16 @@ impl<'r> ToTokens for TypePrinter<'r> {
             Type::GUID => self.core_type("GUID"),
             Type::IUnknown => {
                 if self.use_windows_core {
-                    "::windows_core::IUnknown"
+                    ts.extend(quote! { ::windows_core::IUnknown });
+                    return;
                 } else {
                     "IUnknown"
                 }
             }
             Type::IInspectable => {
                 if self.use_windows_core {
-                    "::windows_core::IInspectable"
+                    ts.extend(quote! { ::windows_core::IInspectable });
+                    return;
                 } else {
                     "IInspectable"
                 }
@@ -421,7 +426,7 @@ pub(crate) struct ParamsPrinter<'r, 's> {
 
 impl<'r, 's> ToTokens for ParamsPrinter<'r, 's> {
     fn to_tokens(&self, ts: &mut TokenStream) {
-        let piter = self.sig.params.iter().map(|param| {
+        let params = self.sig.params.iter().map(|param| {
             let pname = to_ident(
                 self.r.param_name(param.def),
                 IdentKind::Param,
@@ -438,7 +443,7 @@ impl<'r, 's> ToTokens for ParamsPrinter<'r, 's> {
             quote! { #pname: #ty }
         });
 
-        ts.append_separated(piter, ", ");
+        ts.extend(quote! { #(#params),* });
     }
 }
 
@@ -471,9 +476,9 @@ impl ToTokens for Attrs {
         });
 
         let cfg_parts = if count == 1 {
-            quote! { #(target_arch = #arches),* }
+            quote! { #[cfg(#(target_arch = #arches),*)] }
         } else {
-            quote! { any(#(target_arch = #arches),*) }
+            quote! { #[cfg(any(#(target_arch = #arches),*))] }
         };
 
         ts.extend(cfg_parts);
