@@ -1,0 +1,10 @@
+---
+source: tests/constants.rs
+expression: bo.bindings
+---
+#![allow(non_snake_case, non_upper_case_globals, non_camel_case_types)]
+pub const GlAdd: u32 = 260;
+pub const GlAllAttribBits: u32 = 1048575;
+pub const GluBegin: u32 = 100100;
+pub const GluCcw: u32 = 100121;
+

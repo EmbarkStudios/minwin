@@ -3,10 +3,54 @@ source: tests/enums.rs
 expression: bo.bindings
 ---
 #![allow(non_snake_case, non_upper_case_globals, non_camel_case_types)]
+::windows_targets::link!(
+    "clfsw32.dll" "system" fn ReadLogNotification(hLog : HANDLE, pNotification : * mut
+    CLFS_MGMT_NOTIFICATION, lpOverlapped : * mut OVERLAPPED) -> BOOL
+);
+::windows_targets::link!(
+    "kernel32.dll" "system" fn GetFileType(hFile : HANDLE) -> FILE_TYPE::Enum
+);
+pub mod CLFS_MGMT_NOTIFICATION_TYPE {
+    pub type Enum = i32;
+    pub const ClfsMgmtLogWriteNotification: Enum = 3;
+}
+pub mod FILE_TYPE {
+    pub type Enum = u32;
+    pub const FILE_TYPE_DISK: Enum = 1;
+}
 pub mod GENERIC_ACCESS_RIGHTS {
     pub type Enum = u32;
     pub const GENERIC_ALL: Enum = 268435456;
     pub const GENERIC_WRITE: Enum = 1073741824;
     pub const GENERIC_READ: Enum = 2147483648;
+}
+pub type BOOL = i32;
+#[repr(C)]
+pub struct CLFS_MGMT_NOTIFICATION {
+    pub Notification: CLFS_MGMT_NOTIFICATION_TYPE::Enum,
+    pub Lsn: CLS_LSN,
+    pub LogIsPinned: u16,
+}
+#[repr(C)]
+pub struct CLS_LSN {
+    pub Internal: u64,
+}
+pub type HANDLE = isize;
+#[repr(C)]
+pub struct OVERLAPPED {
+    pub Internal: usize,
+    pub InternalHigh: usize,
+    pub Anonymous: OVERLAPPED_0,
+    pub hEvent: HANDLE,
+}
+#[repr(C)]
+pub union OVERLAPPED_0 {
+    pub Anonymous: ::std::mem::ManuallyDrop<OVERLAPPED_0_0>,
+    pub Pointer: *mut ::core::ffi::c_void,
+}
+#[repr(C)]
+pub struct OVERLAPPED_0_0 {
+    pub Offset: u32,
+    pub OffsetHigh: u32,
 }
 

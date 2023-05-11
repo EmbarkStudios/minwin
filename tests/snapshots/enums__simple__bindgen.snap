@@ -11,8 +11,73 @@ expression: bo.bindings
     dead_code,
     clippy::all
 )]
+::windows_targets::link!("clfsw32.dll" "system" fn ReadLogNotification(hlog : HANDLE, pnotification : *mut CLFS_MGMT_NOTIFICATION, lpoverlapped : *mut OVERLAPPED) -> BOOL);
+::windows_targets::link!("kernel32.dll" "system" fn GetFileType(hfile : HANDLE) -> FILE_TYPE);
+pub type BOOL = i32;
+#[repr(C)]
+pub struct CLFS_MGMT_NOTIFICATION {
+    pub Notification: CLFS_MGMT_NOTIFICATION_TYPE,
+    pub Lsn: CLS_LSN,
+    pub LogIsPinned: u16,
+}
+impl ::core::marker::Copy for CLFS_MGMT_NOTIFICATION {}
+impl ::core::clone::Clone for CLFS_MGMT_NOTIFICATION {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+pub type CLFS_MGMT_NOTIFICATION_TYPE = i32;
+#[repr(C)]
+pub struct CLS_LSN {
+    pub Internal: u64,
+}
+impl ::core::marker::Copy for CLS_LSN {}
+impl ::core::clone::Clone for CLS_LSN {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+pub const ClfsMgmtLogWriteNotification: CLFS_MGMT_NOTIFICATION_TYPE = 3i32;
+pub type FILE_TYPE = u32;
+pub const FILE_TYPE_DISK: FILE_TYPE = 1u32;
 pub type GENERIC_ACCESS_RIGHTS = u32;
 pub const GENERIC_ALL: GENERIC_ACCESS_RIGHTS = 268435456u32;
 pub const GENERIC_READ: GENERIC_ACCESS_RIGHTS = 2147483648u32;
 pub const GENERIC_WRITE: GENERIC_ACCESS_RIGHTS = 1073741824u32;
+pub type HANDLE = isize;
+#[repr(C)]
+pub struct OVERLAPPED {
+    pub Internal: usize,
+    pub InternalHigh: usize,
+    pub Anonymous: OVERLAPPED_0,
+    pub hEvent: HANDLE,
+}
+impl ::core::marker::Copy for OVERLAPPED {}
+impl ::core::clone::Clone for OVERLAPPED {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+#[repr(C)]
+pub union OVERLAPPED_0 {
+    pub Anonymous: OVERLAPPED_0_0,
+    pub Pointer: *mut ::core::ffi::c_void,
+}
+impl ::core::marker::Copy for OVERLAPPED_0 {}
+impl ::core::clone::Clone for OVERLAPPED_0 {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+#[repr(C)]
+pub struct OVERLAPPED_0_0 {
+    pub Offset: u32,
+    pub OffsetHigh: u32,
+}
+impl ::core::marker::Copy for OVERLAPPED_0_0 {}
+impl ::core::clone::Clone for OVERLAPPED_0_0 {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
 
