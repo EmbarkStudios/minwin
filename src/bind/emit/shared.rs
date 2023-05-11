@@ -443,7 +443,7 @@ impl<'r, 's> ToTokens for ParamsPrinter<'r, 's> {
 }
 
 bitflags::bitflags! {
-    #[derive(Debug, Copy, Clone)]
+    #[derive(Debug, Copy, Clone, PartialOrd, Ord, PartialEq, Eq)]
     pub struct Attrs: u8 {
         const X86 = 1 << 0;
         const X86_64 = 1 << 1;

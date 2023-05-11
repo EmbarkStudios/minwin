@@ -54,6 +54,6 @@ impl<'r> Emit<'r> {
             }
         };
 
-        os.insert_function(module.into(), is_system, meth, ident, ts);
+        os.insert_function(module.into(), is_system, meth, ident, attrs, ts);
     }
 }

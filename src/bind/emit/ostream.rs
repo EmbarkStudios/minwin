@@ -65,7 +65,7 @@ pub struct OutputStream<'r> {
     enums: BTreeMap<TypeDef, EnumBlock>,
     constants: BTreeMap<Ident, TokenStream>,
     types: BTreeMap<Ident, (Type, Option<TokenStream>)>,
-    functions: BTreeMap<(Ustr, bool), BTreeMap<Ident, (MethodDef, TokenStream)>>,
+    functions: BTreeMap<(Ustr, bool), BTreeMap<(Ident, Attrs), (MethodDef, TokenStream)>>,
 }
 
 impl<'r> OutputStream<'r> {
@@ -127,12 +127,13 @@ impl<'r> OutputStream<'r> {
         is_system: bool,
         func: MethodDef,
         ident: Ident,
+        attrs: Attrs,
         ts: TokenStream,
     ) {
         self.functions
             .entry((library, is_system))
             .or_default()
-            .insert(ident, (func, ts));
+            .insert((ident, attrs), (func, ts));
     }
 
     pub fn finalize(
@@ -284,14 +285,14 @@ impl<'r> OutputStream<'r> {
             // arch specific can be located, and then reexport all the types
             // in the module to make them available to the crate
             root.extend(quote! {
-                #[cfg(#arches)]
+                #arches
                 mod #mn {
                     use super::*;
 
                     #(#recs)*
                 }
 
-                #[cfg(#arches)]
+                #arches
                 use #mn::*;
             });
         }
