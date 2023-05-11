@@ -1,0 +1,29 @@
+---
+source: tests/functions.rs
+expression: bo.bindings
+---
+#![allow(non_snake_case, non_upper_case_globals, non_camel_case_types)]
+#[cfg(target_arch = "x86")]
+::windows_targets::link!(
+    "odbc32.dll" "system" fn SQLBindCol(StatementHandle : * mut ::core::ffi::c_void,
+    ColumnNumber : u16, TargetType : i16, TargetValue : * mut ::core::ffi::c_void,
+    BufferLength : i32, StrLen_or_Ind : * mut i32) -> i16
+);
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+::windows_targets::link!(
+    "odbc32.dll" "system" fn SQLBindCol(StatementHandle : * mut ::core::ffi::c_void,
+    ColumnNumber : u16, TargetType : i16, TargetValue : * mut ::core::ffi::c_void,
+    BufferLength : i64, StrLen_or_Ind : * mut i64) -> i16
+);
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+::windows_targets::link!(
+    "user32.dll" "system" fn GetWindowLongPtrA(hWnd : HWND, nIndex :
+    WINDOW_LONG_PTR_INDEX) -> isize
+);
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+::windows_targets::link!(
+    "user32.dll" "system" fn GetWindowLongPtrW(hWnd : HWND, nIndex :
+    WINDOW_LONG_PTR_INDEX) -> isize
+);
+pub type HWND = isize;
+
