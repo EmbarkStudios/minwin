@@ -10,10 +10,18 @@ impl<'r> Emit<'r> {
 
         let attrs = self.attributes(reader.method_def_attributes(meth));
         let params = self.param_printer(&sig);
-        let ret = sig.return_type.as_ref().map(|rt| {
-            let rt = self.type_printer(rt.clone());
-            quote! { -> #rt }
-        });
+        let ret = sig
+            .return_type
+            .as_ref()
+            .map(|rt| {
+                let rt = self.type_printer(rt.clone());
+                quote! { -> #rt }
+            })
+            .or_else(|| {
+                reader
+                    .method_def_does_not_return(meth)
+                    .then(|| quote! { -> ! })
+            });
 
         // Handle the 3! functions that have a different link name :crying:
         let symbol = if let Some(impl_map) = reader.method_def_impl_map(sig.def) {
@@ -35,6 +43,9 @@ impl<'r> Emit<'r> {
 
         let ts = if self.config.linking_style == crate::bind::LinkingStyle::WindowsTargets {
             let symbol = (self.config.use_rust_casing || symbol != name).then_some(symbol);
+
+            // Unfortunately the link macro requires a return, even if it's just unit
+            let ret = ret.unwrap_or_else(|| quote! { -> () });
 
             quote! {
                 #attrs

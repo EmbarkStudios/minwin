@@ -1,0 +1,14 @@
+---
+source: tests/functions.rs
+expression: bo.bindings
+---
+#![allow(non_snake_case, non_upper_case_globals, non_camel_case_types)]
+::windows_targets::link!("kernel32.dll" "system" fn ExitProcess(uExitCode : u32) -> !);
+::windows_targets::link!("kernel32.dll" "system" fn ExitThread(dwExitCode : u32) -> !);
+::windows_targets::link!("kernel32.dll" "system" fn FatalExit(ExitCode : i32) -> !);
+::windows_targets::link!(
+    "kernel32.dll" "system" fn FreeLibraryAndExitThread(hLibModule : HMODULE, dwExitCode
+    : u32) -> !
+);
+pub type HMODULE = isize;
+
