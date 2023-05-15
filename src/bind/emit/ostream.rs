@@ -41,7 +41,7 @@ impl cmp::PartialOrd for EnumConstant {
     }
 }
 
-struct EnumBlock {
+pub struct EnumBlock {
     /// The core type of the enum eg i32/u32
     ty: Type,
     /// The unique constants, note that they can be unique by name, but not value
@@ -106,8 +106,8 @@ impl<'r> OutputStream<'r> {
     }
 
     #[inline]
-    pub fn insert_enum_constant(&mut self, ty: Type, name: Ident, value: Value) {
-        let enum_block = self.enums.entry(ty.clone()).or_insert_with(|| {
+    pub fn insert_enum(&mut self, ty: Type) -> &mut EnumBlock {
+        self.enums.entry(ty.clone()).or_insert_with(|| {
             let ty = if let Type::TypeDef((def, _)) = &ty {
                 self.reader.type_def_underlying_type(*def)
             } else {
@@ -117,8 +117,12 @@ impl<'r> OutputStream<'r> {
                 ty,
                 constants: BTreeSet::new(),
             }
-        });
+        })
+    }
 
+    #[inline]
+    pub fn insert_enum_constant(&mut self, ty: Type, name: Ident, value: Value) {
+        let enum_block = self.insert_enum(ty);
         enum_block.insert(EnumConstant { name, value });
     }
 
@@ -195,7 +199,7 @@ impl<'r> OutputStream<'r> {
                         let name = ec.name;
                         let val = ec.value;
                         ts.extend(quote! {
-                            pub const #name: #typ = #val;
+                            pub const #name: #typ = #val as _;
                         });
                     }
 

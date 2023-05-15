@@ -1,0 +1,63 @@
+---
+source: tests/enums.rs
+expression: bo.bindings
+---
+#![allow(non_snake_case, non_upper_case_globals, non_camel_case_types)]
+::windows_targets::link!(
+    "user32.dll" "system" fn GetPointerTouchInfo(pointerId : u32, touchInfo : * mut
+    POINTER_TOUCH_INFO) -> BOOL
+);
+pub mod POINTER_BUTTON_CHANGE_TYPE {
+    pub type Enum = i32;
+}
+pub mod POINTER_FLAGS {
+    pub type Enum = u32;
+}
+pub mod POINTER_INPUT_TYPE {
+    pub type Enum = i32;
+}
+pub type BOOL = i32;
+pub type HANDLE = isize;
+pub type HWND = isize;
+#[repr(C)]
+pub struct POINT {
+    pub x: i32,
+    pub y: i32,
+}
+#[repr(C)]
+pub struct POINTER_INFO {
+    pub pointerType: POINTER_INPUT_TYPE::Enum,
+    pub pointerId: u32,
+    pub frameId: u32,
+    pub pointerFlags: POINTER_FLAGS::Enum,
+    pub sourceDevice: HANDLE,
+    pub hwndTarget: HWND,
+    pub ptPixelLocation: POINT,
+    pub ptHimetricLocation: POINT,
+    pub ptPixelLocationRaw: POINT,
+    pub ptHimetricLocationRaw: POINT,
+    pub dwTime: u32,
+    pub historyCount: u32,
+    pub InputData: i32,
+    pub dwKeyStates: u32,
+    pub PerformanceCount: u64,
+    pub ButtonChangeType: POINTER_BUTTON_CHANGE_TYPE::Enum,
+}
+#[repr(C)]
+pub struct POINTER_TOUCH_INFO {
+    pub pointerInfo: POINTER_INFO,
+    pub touchFlags: u32,
+    pub touchMask: u32,
+    pub rcContact: RECT,
+    pub rcContactRaw: RECT,
+    pub orientation: u32,
+    pub pressure: u32,
+}
+#[repr(C)]
+pub struct RECT {
+    pub left: i32,
+    pub top: i32,
+    pub right: i32,
+    pub bottom: i32,
+}
+

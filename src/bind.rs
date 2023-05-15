@@ -226,6 +226,8 @@ pub struct MinwinBindConfig {
     pub pretty_print: bool,
     /// If true, emits a version header at the beginning of the bindings
     pub add_version_header: bool,
+    /// If true, emits a link to the MSDN documentation for items that have it
+    pub emit_docs: bool,
 }
 
 impl Default for MinwinBindConfig {
@@ -239,6 +241,7 @@ impl Default for MinwinBindConfig {
             pretty_print: true,
             // We don't want this in tests
             add_version_header: !cfg!(debug_assertions),
+            emit_docs: false,
         }
     }
 }

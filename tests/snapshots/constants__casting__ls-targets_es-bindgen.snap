@@ -1,0 +1,12 @@
+---
+source: tests/constants.rs
+expression: bo.bindings
+---
+#![allow(non_snake_case, non_upper_case_globals, non_camel_case_types)]
+pub const IDC_UPARROW: PCWSTR = 32516 as _;
+pub const IDC_SIZENWSE: PCWSTR = 32642 as _;
+pub const IDC_SIZENESW: PCWSTR = 32643 as _;
+pub const IDC_SIZEWE: PCWSTR = 32644 as _;
+pub const IDC_SIZENS: PCWSTR = 32645 as _;
+pub type PCWSTR = *const u16;
+

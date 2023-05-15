@@ -18,7 +18,7 @@ impl<'r> super::Emit<'r> {
             if ty == constant_type {
                 // Type::String normally goes to HSTRING, but this is misleading
                 // for constants, since it can be ansi or utf-16, so we need to
-                // change it to the appropriate pointer type based on the fields
+                // change it to the appropriate pointer type based on the field's
                 // encoding
                 let typename = self.type_printer(if matches!(constant_type, Type::String) {
                     if value.is_wide_str {

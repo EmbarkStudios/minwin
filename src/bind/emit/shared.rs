@@ -291,7 +291,8 @@ impl ToTokens for Ptrs {
         }
 
         let tok = tok(self.1);
-        ts.append_separated((0..self.0).map(|_| tok), ' ');
+        let toks = (0..self.0).map(|_| tok);
+        ts.extend(quote!{ #(#toks) * });
     }
 }
 
@@ -621,6 +622,15 @@ impl<'i> ToTokens for ImplsPrinter<'i> {
     }
 }
 
+pub(crate) struct DocsPrinter(String);
+
+impl ToTokens for DocsPrinter {
+    fn to_tokens(&self, ts: &mut TokenStream) {
+        let docs = format!("[MSDN Docs]({})", self.0);
+        ts.extend(quote! { #[docs = #docs] });
+    }
+}
+
 impl<'r> super::Emit<'r> {
     #[inline]
     pub(crate) fn type_printer(&self, ty: Type) -> TypePrinter<'r> {
@@ -684,6 +694,34 @@ impl<'r> super::Emit<'r> {
         attrs
     }
 
+    /// Returns a printer capable of emitting a link to the MSDN documentation
+    /// for the item, if available and enabled
+    /// 
+    /// The current metadata does not include this attribute yet. See <https://github.com/microsoft/windows-rs/issues/1763>
+    #[inline]
+    pub(crate) fn docs_link(&self, attributes: impl Iterator<Item = wmr::Attribute>) -> Option<DocsPrinter> {
+        if !self.config.emit_docs {
+            return None;
+        }
+
+        let reader = self.reader;
+
+        for attr in attributes {
+            if reader.attribute_name(attr) == "Documentation" {
+                let args = reader.attribute_args(attr);
+                
+                let Some((_, wmr::Value::String(s))) = args.get(0) else {
+                    tracing::error!("encountered a documentation attribute that wasn't a string");
+                    return None;
+                };
+
+                return Some(DocsPrinter(s.clone()));
+            }
+        }
+
+        None
+    }
+
     /// Adds a Clone and optional Copy implementation for the specified type
     #[inline]
     pub(crate) fn impls<'i>(&self, ident: &'i Ident, impls: Impls) -> ImplsPrinter<'i> {
@@ -694,7 +732,7 @@ impl<'r> super::Emit<'r> {
     #[inline]
     pub(crate) fn is_copy(&self, ty: &Type) -> bool {
         if let Type::TypeDef((td, _)) = ty {
-            if matches!(self.reader.type_def_kind(*td), wmr::TypeKind::Struct) {
+            if matches!(self.reader.type_def_kind(*td), wmr::TypeKind::Struct) && !self.reader.type_def_is_handle(*td) {
                 return self
                     .items
                     .types

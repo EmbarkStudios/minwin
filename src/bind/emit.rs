@@ -78,7 +78,7 @@ impl<'r> Emit<'r> {
                         (ident, ts)
                     }
                     Type::PWSTR => {
-                        let ident = self.config.make_ident("PSTR", IdentKind::Type);
+                        let ident = self.config.make_ident("PWSTR", IdentKind::Type);
                         let ts = quote! { pub type #ident = *mut u16; };
                         (ident, ts)
                     }
@@ -158,6 +158,7 @@ impl<'r> Emit<'r> {
                         (ident, ts)
                     }
                     TypeKind::Enum => {
+                        os.insert_enum(ty.clone());
                         continue;
                     }
                     TypeKind::Struct => {

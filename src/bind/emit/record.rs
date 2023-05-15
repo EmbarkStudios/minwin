@@ -106,9 +106,9 @@ impl<'r> super::Emit<'r> {
 
             // Unlike windows-bindgen, we don't unconditionally emit Copy/Clone for
             // every record since it just increases compile times for no benefit
-            // in many cases. However, this means we need to to check if the field
-            // type is a record and whether it is is Copy, as otherwise we need
-            // to emit that the field is manually droppable
+            // in many cases. However, this means we need to to check unions to
+            // see if their field type is Copy, as if it is not, we need to emit
+            // that the field is manually droppable
             let ts = if is_union && !self.is_copy(&ty) {
                 let tp = self.type_printer(ty);
                 quote! { pub #fname: ::std::mem::ManuallyDrop<#tp> }
@@ -143,7 +143,10 @@ impl<'r> super::Emit<'r> {
         let rec_kind = rec_kind(is_union);
         let implsp = self.impls(&ident, impls);
 
+        let docs = self.docs_link(reader.type_def_attributes(rec));
+
         ts.extend(quote! {
+            #docs
             #repr
             pub #rec_kind #ident {
                 #(#fields),*

@@ -46,3 +46,23 @@ test!(
     ],
     ["Windows.Win32.Foundation.S_OK"]
 );
+
+// Ensures we can emit the enum type alias, even if no actual enum variants
+// are requested
+test!(
+    always_emits_alias,
+    [
+        BindConfig::Minwin(Default::default()),
+        BindConfig::Minwin(MinwinBindConfig {
+            enum_style: EnumStyle::Minwin,
+            ..Default::default()
+        }),
+        BindConfig::Minwin(MinwinBindConfig {
+            enum_style: EnumStyle::Minwin,
+            use_rust_casing: true,
+            ..Default::default()
+        }),
+        BindConfig::Bindgen,
+    ],
+    ["Windows.Win32.UI.Input.Pointer.GetPointerTouchInfo"]
+);

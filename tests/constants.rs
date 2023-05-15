@@ -30,3 +30,17 @@ test!(
         "Windows.Win32.Media.Multimedia.JOY_CONFIGCHANGED_MSGSTRING",
     ]
 );
+
+// Ensures we can generate constants that need casting to the appropriate type
+// currently broken for bindgen <https://github.com/microsoft/windows-rs/issues/2504>
+test!(
+    casting,
+    [BindConfig::Minwin(Default::default()), BindConfig::Bindgen,],
+    [
+        "Windows.Win32.UI.WindowsAndMessaging.IDC_SIZENESW",
+        "Windows.Win32.UI.WindowsAndMessaging.IDC_SIZENS",
+        "Windows.Win32.UI.WindowsAndMessaging.IDC_SIZENWSE",
+        "Windows.Win32.UI.WindowsAndMessaging.IDC_SIZEWE",
+        "Windows.Win32.UI.WindowsAndMessaging.IDC_UPARROW",
+    ]
+);

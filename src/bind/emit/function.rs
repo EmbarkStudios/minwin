@@ -9,6 +9,8 @@ impl<'r> Emit<'r> {
         let ident = self.config.make_ident(name, IdentKind::Function);
 
         let attrs = self.attributes(reader.method_def_attributes(meth));
+        let docs = self.docs_link(reader.method_def_attributes(meth));
+
         let params = self.param_printer(&sig);
         let ret = sig
             .return_type
@@ -49,6 +51,7 @@ impl<'r> Emit<'r> {
 
             quote! {
                 #attrs
+                #docs
                 ::windows_targets::link!(#module #abi #symbol fn #ident(#params)#ret);
             }
         } else {
@@ -60,6 +63,7 @@ impl<'r> Emit<'r> {
 
             quote! {
                 #attrs
+                #docs
                 #link_name
                 pub fn #ident(#params)#ret;
             }
