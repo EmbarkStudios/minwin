@@ -95,7 +95,8 @@ impl<'names, 'r> Gatherer<'names, 'r> {
                 .find(|field| reader.field_name(*field) == type_name.name)
             {
                 constants.insert(field);
-                self.collect(&field_type(field), &mut types);
+                let ty = field_type(field).to_const_type();
+                self.collect(&ty, &mut types);
             }
 
             if let Some(field) = reader

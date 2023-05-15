@@ -25,5 +25,6 @@ expression: bo.bindings
     "user32.dll" "system" fn GetWindowLongPtrW(hWnd : HWND, nIndex :
     WINDOW_LONG_PTR_INDEX) -> isize
 );
+pub type WINDOW_LONG_PTR_INDEX = i32;
 pub type HWND = isize;
 

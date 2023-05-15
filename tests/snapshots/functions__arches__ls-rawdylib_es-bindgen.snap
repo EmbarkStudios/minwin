@@ -31,5 +31,6 @@ extern "system" {
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     pub fn GetWindowLongPtrW(hWnd: HWND, nIndex: WINDOW_LONG_PTR_INDEX) -> isize;
 }
+pub type WINDOW_LONG_PTR_INDEX = i32;
 pub type HWND = isize;
 
