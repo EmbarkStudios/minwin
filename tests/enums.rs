@@ -66,3 +66,26 @@ test!(
     ],
     ["Windows.Win32.UI.Input.Pointer.GetPointerTouchInfo"]
 );
+
+// Ensures that enums that clash with handle types are supported
+test!(
+    handle_and_enum,
+    [
+        BindConfig::Minwin(Default::default()),
+        BindConfig::Minwin(MinwinBindConfig {
+            enum_style: EnumStyle::Minwin,
+            ..Default::default()
+        }),
+        BindConfig::Minwin(MinwinBindConfig {
+            enum_style: EnumStyle::Minwin,
+            use_rust_casing: true,
+            ..Default::default()
+        }),
+        BindConfig::Bindgen,
+    ],
+    [
+        "Windows.Win32.UI.WindowsAndMessaging.SetWindowPos",
+        "Windows.Win32.UI.WindowsAndMessaging.GetMessageW",
+        "Windows.Win32.UI.WindowsAndMessaging.HWND_NOTOPMOST",
+    ]
+);
