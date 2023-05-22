@@ -44,7 +44,7 @@ impl<'r> Emit<'r> {
         }
 
         os.root.extend(quote! {
-            #![allow(non_snake_case, non_upper_case_globals, non_camel_case_types)]
+            #![allow(non_snake_case, non_upper_case_globals, non_camel_case_types, clippy::upper_case_acronyms)]
         });
 
         let reader = self.reader;
