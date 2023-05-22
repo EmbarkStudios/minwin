@@ -162,12 +162,6 @@ impl<'names, 'r> Gatherer<'names, 'r> {
 
         for field in reader.type_def_fields(def) {
             let ty = reader.field_type(field, Some(def));
-            if let Type::TypeDef((fdef, _)) = &ty {
-                if reader.type_def_namespace(*fdef).is_empty() {
-                    continue;
-                }
-            }
-
             self.collect(&ty, collected);
         }
 
@@ -225,15 +219,7 @@ impl<'names, 'r> Gatherer<'names, 'r> {
 
             for field in reader.type_def_fields(nested) {
                 let ty = reader.field_type(field, Some(nested));
-                if let Type::TypeDef((def, _)) = &ty {
-                    // Skip the fields that actually refer to the anonymous nested
-                    // type, otherwise it will get added to the typeset and emitted
-                    if reader.type_def_namespace(*def).is_empty() {
-                        continue;
-                    }
-
-                    self.collect(&ty, collected);
-                }
+                self.collect(&ty, collected);
             }
         }
     }

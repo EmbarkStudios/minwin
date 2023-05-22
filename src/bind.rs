@@ -364,10 +364,20 @@ pub fn do_minwin(emit: emit::Emit<'_>) -> anyhow::Result<BindOutput> {
     let mut ns_items = BTreeMap::<String, Items>::new();
     let reader = emit.reader;
 
+    fn insert_record(reader: &wmr::Reader<'_>, td: wmr::TypeDef, set: &mut BTreeSet<wmr::TypeDef>) {
+        if !set.insert(td) {
+            return;
+        }
+
+        for nested in reader.nested_types(td) {
+            insert_record(reader, nested, set);
+        }
+    }
+
     let index_namespace = |name: &str, ns_items: &mut BTreeMap<String, Items>| {
         assert!(
             reader.namespaces().any(|ns| ns == name),
-            "namespace {name} was not found"
+            "namespace '{name}' was not found"
         );
 
         let functions = reader.namespace_functions(name).collect();
@@ -386,7 +396,7 @@ pub fn do_minwin(emit: emit::Emit<'_>) -> anyhow::Result<BindOutput> {
                     if reader.type_def_is_handle(ty) {
                         aliases.insert(wmr::Type::TypeDef((ty, Vec::new())));
                     } else {
-                        records.insert(ty);
+                        insert_record(reader, ty, &mut records);
                     }
                 }
                 wmr::TypeKind::Enum => {
@@ -479,7 +489,13 @@ pub fn do_minwin(emit: emit::Emit<'_>) -> anyhow::Result<BindOutput> {
         let wmr::Type::TypeDef((td, _)) = &ty else { continue; };
         let td = *td;
 
-        let ns = reader.type_def_namespace(td);
+        let mut ns = reader.type_def_namespace(td);
+        let mut name_td = td;
+        while ns.is_empty() {
+            let Some(et) = reader.type_def_enclosing_type(name_td) else { continue; };
+            ns = reader.type_def_namespace(et);
+            name_td = et;
+        }
         if !ns_items.contains_key(ns) {
             index_namespace(ns, &mut ns_items);
         }

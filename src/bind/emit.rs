@@ -129,6 +129,11 @@ impl<'r> Emit<'r> {
                 os.insert_type(ty.clone(), ident, ts);
             } else if let Type::TypeDef((td, _)) = &ty {
                 let def = *td;
+
+                if reader.type_def_enclosing_type(def).is_some() {
+                    continue;
+                }
+
                 let kind = reader.type_def_kind(def);
                 let name = reader.type_def_name(def);
 
