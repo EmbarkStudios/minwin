@@ -1,12 +1,7 @@
 use super::*;
 
 impl<'r> super::Emit<'r> {
-    pub(super) fn emit_record(
-        &self,
-        os: &mut OutputStream,
-        rec: TypeDef,
-        impls: Impls,
-    ) -> anyhow::Result<()> {
+    pub(super) fn emit_record(&self, os: &mut OutputStream, rec: TypeDef) -> anyhow::Result<()> {
         let reader = self.reader;
 
         let attrs = self.attributes(reader.type_def_attributes(rec));
@@ -14,7 +9,7 @@ impl<'r> super::Emit<'r> {
             .config
             .make_ident(reader.type_def_name(rec), IdentKind::Record);
 
-        if reader.type_def_fields(rec).next().is_none() {
+        if reader.type_def_fields(rec).count() == 0 {
             if let Some(value) = reader.type_def_guid(rec) {
                 let val = self.guid_printer(value);
                 let guid_ty = self.type_printer(Type::GUID);
@@ -48,7 +43,7 @@ impl<'r> super::Emit<'r> {
         }
 
         let mut ts = TokenStream::new();
-        self.emit_rec(rec, &ident, impls, &mut ts)?;
+        self.emit_rec(rec, &ident, &mut ts)?;
         os.insert_record(rec, ident, attrs, ts);
 
         Ok(())
@@ -58,7 +53,6 @@ impl<'r> super::Emit<'r> {
         &self,
         rec: TypeDef,
         ident: &pm::Ident,
-        impls: Impls,
         ts: &mut TokenStream,
     ) -> anyhow::Result<()> {
         let reader = self.reader;
@@ -91,34 +85,37 @@ impl<'r> super::Emit<'r> {
             RecordLayout::None
         };
 
-        let fields = reader.type_def_fields(rec).filter_map(|f| {
-            if reader
-                .field_flags(f)
-                .contains(wmr::FieldAttributes::LITERAL)
-            {
-                return None;
-            }
+        let (fields, field_names): (Vec<_>, Vec<_>) = reader
+            .type_def_fields(rec)
+            .filter_map(|f| {
+                if reader
+                    .field_flags(f)
+                    .contains(wmr::FieldAttributes::LITERAL)
+                {
+                    return None;
+                }
 
-            let fname = self
-                .config
-                .make_ident(reader.field_name(f), IdentKind::Field);
-            let ty = reader.field_type(f, Some(rec));
+                let fname = self
+                    .config
+                    .make_ident(reader.field_name(f), IdentKind::Field);
+                let ty = reader.field_type(f, Some(rec));
 
-            // Unlike windows-bindgen, we don't unconditionally emit Copy/Clone for
-            // every record since it just increases compile times for no benefit
-            // in many cases. However, this means we need to to check unions to
-            // see if their field type is Copy, as if it is not, we need to emit
-            // that the field is manually droppable
-            let ts = if is_union && !self.is_copy(&ty) {
-                let tp = self.type_printer(ty);
-                quote! { pub #fname: ::std::mem::ManuallyDrop<#tp> }
-            } else {
-                let tp = self.type_printer(ty);
-                quote! { pub #fname: #tp }
-            };
+                // Unlike windows-bindgen, we don't unconditionally emit Copy/Clone for
+                // every record since it just increases compile times for no benefit
+                // in many cases. However, this means we need to to check unions to
+                // see if their field type is Copy, as if it is not, we need to emit
+                // that the field is manually droppable
+                let ts = if is_union && !self.is_copy(&ty) {
+                    let tp = self.type_printer(ty);
+                    quote! { pub #fname: ::std::mem::ManuallyDrop<#tp> }
+                } else {
+                    let tp = self.type_printer(ty);
+                    quote! { pub #fname: #tp }
+                };
 
-            Some(ts)
-        });
+                Some((ts, fname))
+            })
+            .unzip();
 
         fn rec_kind(is_union: bool) -> &'static syn::Ident {
             use std::sync::Once;
@@ -141,7 +138,14 @@ impl<'r> super::Emit<'r> {
         }
 
         let rec_kind = rec_kind(is_union);
-        let implsp = self.impls(&ident, impls);
+
+        let impls = self
+            .items
+            .types
+            .get(&Type::TypeDef((rec, Vec::new())))
+            .cloned()
+            .unwrap();
+        let implsp = self.impls(&ident, impls, (!is_union).then_some(&field_names));
 
         let docs = self.docs_link(reader.type_def_attributes(rec));
 
@@ -157,7 +161,7 @@ impl<'r> super::Emit<'r> {
 
         for (i, nested) in reader.nested_types(rec).enumerate() {
             let nested_ident = quote::format_ident!("{ident}_{i}");
-            self.emit_rec(nested, &nested_ident, impls, ts)?;
+            self.emit_rec(nested, &nested_ident, ts)?;
         }
 
         Ok(())

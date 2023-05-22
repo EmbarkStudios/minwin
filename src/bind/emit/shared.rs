@@ -57,7 +57,7 @@ impl crate::bind::MinwinBindConfig {
         } else {
             name.to_owned()
         };
-    
+
         // keywords list based on https://doc.rust-lang.org/reference/keywords.html
         if matches!(
             is.as_str(),
@@ -71,11 +71,10 @@ impl crate::bind::MinwinBindConfig {
         ) {
             is.push('_');
         }
-    
+
         format_ident!("{is}")
     }
 }
-
 
 pub struct Value {
     pub val: wmr::Value,
@@ -145,19 +144,6 @@ impl fmt::Debug for Value {
             Value::F32(v) => write!(f, "{v}: f32"),
             Value::F64(v) => write!(f, "{v}: f64"),
             Value::String(s) => f.write_str(s),
-            // Value::Enum(_td, v) => {
-            //     use windows_metadata::reader::Integer;
-            //     match v {
-            //         Integer::I8(v) => write!(f, "{v}: enum i8"),
-            //         Integer::U8(v) => write!(f, "{v}: enum u8"),
-            //         Integer::I16(v) => write!(f, "{v}: enum i16"),
-            //         Integer::U16(v) => write!(f, "{v}: enum u16"),
-            //         Integer::I32(v) => write!(f, "{v}: enum i32"),
-            //         Integer::U32(v) => write!(f, "{v}: enum u32"),
-            //         Integer::I64(v) => write!(f, "{v}: enum i64"),
-            //         Integer::U64(v) => write!(f, "{v}: enum u64"),
-            //     }
-            // }
             Value::TypeDef(..) | Value::Enum(..) => unreachable!(),
         }
     }
@@ -292,7 +278,7 @@ impl ToTokens for Ptrs {
 
         let tok = tok(self.1);
         let toks = (0..self.0).map(|_| tok);
-        ts.extend(quote!{ #(#toks) * });
+        ts.extend(quote! { #(#toks) * });
     }
 }
 
@@ -387,14 +373,15 @@ impl<'r> ToTokens for TypePrinter<'r> {
                     TypeKind::Struct => {
                         let mut suffix = String::new();
                         let name = record_suffix(reader, def, &mut suffix);
-                        format_ident!("{}{suffix}", self.config.make_ident(name, IdentKind::Record))
+                        format_ident!(
+                            "{}{suffix}",
+                            self.config.make_ident(name, IdentKind::Record)
+                        )
                     }
                     TypeKind::Class | TypeKind::Interface => {
                         self.config.make_ident(name, IdentKind::Record)
                     }
-                    TypeKind::Delegate => {
-                        self.config.make_ident(name, IdentKind::FunctionPointer)
-                    }
+                    TypeKind::Delegate => self.config.make_ident(name, IdentKind::FunctionPointer),
                     TypeKind::Enum => {
                         let ident = self.config.make_ident(name, IdentKind::Enum);
                         if self.config.enum_style == crate::bind::EnumStyle::Minwin {
@@ -450,7 +437,9 @@ pub(crate) struct ParamsPrinter<'r, 's> {
 impl<'r, 's> ToTokens for ParamsPrinter<'r, 's> {
     fn to_tokens(&self, ts: &mut TokenStream) {
         let params = self.sig.params.iter().map(|param| {
-            let pname = self.config.make_ident(self.r.param_name(param.def), IdentKind::Param);
+            let pname = self
+                .config
+                .make_ident(self.r.param_name(param.def), IdentKind::Param);
             let ty = TypePrinter {
                 ty: param.ty.clone(),
                 r: self.r,
@@ -601,7 +590,7 @@ impl From<Vec<ArchLayout>> for ArchLayouts {
     }
 }
 
-pub(crate) struct ImplsPrinter<'i>(&'i Ident, Impls);
+pub(crate) struct ImplsPrinter<'i>(&'i Ident, Impls, Option<&'i [Ident]>);
 
 impl<'i> ToTokens for ImplsPrinter<'i> {
     fn to_tokens(&self, ts: &mut TokenStream) {
@@ -610,7 +599,7 @@ impl<'i> ToTokens for ImplsPrinter<'i> {
             ts.extend(quote! { impl ::core::marker::Copy for #ident {} });
         }
 
-        if self.1.contains(Impls::CLONE) {
+        if self.1.contains(Impls::CLONE | Impls::COPY) {
             ts.extend(quote! {
                 impl ::core::clone::Clone for #ident {
                     fn clone(&self) -> Self {
@@ -618,6 +607,30 @@ impl<'i> ToTokens for ImplsPrinter<'i> {
                     }
                 }
             });
+        } else if self.1.contains(Impls::CLONE) {
+            if let Some(field_names) = self.2 {
+                let fields = field_names.iter().map(|fname| {
+                    quote! { #fname: ::core::clone::Clone::clone(&self.#fname) }
+                });
+
+                ts.extend(quote! {
+                    impl ::core::clone::Clone for #ident {
+                        fn clone(&self) -> Self {
+                            Self {
+                                #(#fields),*
+                            }
+                        }
+                    }
+                });
+            } else {
+                ts.extend(quote! {
+                    impl ::core::clone::Clone for #ident {
+                        fn clone(&self) -> Self {
+                            *self
+                        }
+                    }
+                });
+            }
         }
     }
 }
@@ -696,10 +709,13 @@ impl<'r> super::Emit<'r> {
 
     /// Returns a printer capable of emitting a link to the MSDN documentation
     /// for the item, if available and enabled
-    /// 
+    ///
     /// The current metadata does not include this attribute yet. See <https://github.com/microsoft/windows-rs/issues/1763>
     #[inline]
-    pub(crate) fn docs_link(&self, attributes: impl Iterator<Item = wmr::Attribute>) -> Option<DocsPrinter> {
+    pub(crate) fn docs_link(
+        &self,
+        attributes: impl Iterator<Item = wmr::Attribute>,
+    ) -> Option<DocsPrinter> {
         if !self.config.emit_docs {
             return None;
         }
@@ -709,7 +725,7 @@ impl<'r> super::Emit<'r> {
         for attr in attributes {
             if reader.attribute_name(attr) == "Documentation" {
                 let args = reader.attribute_args(attr);
-                
+
                 let Some((_, wmr::Value::String(s))) = args.get(0) else {
                     tracing::error!("encountered a documentation attribute that wasn't a string");
                     return None;
@@ -724,15 +740,22 @@ impl<'r> super::Emit<'r> {
 
     /// Adds a Clone and optional Copy implementation for the specified type
     #[inline]
-    pub(crate) fn impls<'i>(&self, ident: &'i Ident, impls: Impls) -> ImplsPrinter<'i> {
-        ImplsPrinter(ident, impls)
+    pub(crate) fn impls<'i>(
+        &self,
+        ident: &'i Ident,
+        impls: Impls,
+        field_names: Option<&'i [Ident]>,
+    ) -> ImplsPrinter<'i> {
+        ImplsPrinter(ident, impls, field_names)
     }
 
     /// Checks if a type is `Copy`
     #[inline]
     pub(crate) fn is_copy(&self, ty: &Type) -> bool {
         if let Type::TypeDef((td, _)) = ty {
-            if matches!(self.reader.type_def_kind(*td), wmr::TypeKind::Struct) && !self.reader.type_def_is_handle(*td) {
+            if matches!(self.reader.type_def_kind(*td), wmr::TypeKind::Struct)
+                && !self.reader.type_def_is_handle(*td)
+            {
                 return self
                     .items
                     .types

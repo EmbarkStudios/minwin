@@ -243,7 +243,7 @@ impl<'names, 'r> Gatherer<'names, 'r> {
         }
     }
 
-    fn fill_impls(&self, ty: Type, impls: Impls, collected: &mut BTreeMap<Type, Impls>) {
+    fn fill_impls(&self, ty: Type, mut impls: Impls, collected: &mut BTreeMap<Type, Impls>) {
         let ty = match ty {
             // We can skip fields that are behind a pointer
             Type::MutPtr(_) | Type::ConstPtr(_) => return,
@@ -257,6 +257,16 @@ impl<'names, 'r> Gatherer<'names, 'r> {
         let Type::TypeDef((def, _generics)) = &ty else { return; };
         let def = *def;
         let reader = self.reader;
+
+        // Unions are a special case, when implementing Clone for a type that contains
+        // unions, that thus also need to be Clone, the union additionally needs to be Copy
+        if impls.intersects(Impls::CLONE)
+            && reader
+                .type_def_flags(def)
+                .contains(reader::TypeAttributes::EXPLICIT_LAYOUT)
+        {
+            impls.insert(Impls::COPY);
+        }
 
         if let Some(imp) = collected.get_mut(&ty) {
             if imp.contains(impls) {

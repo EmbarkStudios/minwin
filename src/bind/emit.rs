@@ -49,7 +49,7 @@ impl<'r> Emit<'r> {
 
         let reader = self.reader;
 
-        for (ty, impls) in &self.items.types {
+        for (ty, _impls) in &self.items.types {
             if !self.config.use_core && !matches!(ty, Type::TypeDef(..)) {
                 let (ident, ts) = match ty {
                     Type::HRESULT => {
@@ -99,7 +99,7 @@ impl<'r> Emit<'r> {
                     }
                     Type::GUID => {
                         let ident = self.config.make_ident("GUID", IdentKind::Record);
-                        let impls = self.impls(&ident, Impls::COPY);
+                        let impls = self.impls(&ident, Impls::COPY, None);
 
                         let ts = quote! {
                             #[repr(C)]
@@ -167,7 +167,7 @@ impl<'r> Emit<'r> {
                         continue;
                     }
                     TypeKind::Struct => {
-                        self.emit_record(&mut os, def, *impls)?;
+                        self.emit_record(&mut os, def)?;
                         continue;
                     }
                     TypeKind::Delegate => self.emit_function_pointer(def)?,
