@@ -2,7 +2,12 @@
 source: tests/enums.rs
 expression: bo.bindings
 ---
-#![allow(non_snake_case, non_upper_case_globals, non_camel_case_types)]
+#![allow(
+    non_snake_case,
+    non_upper_case_globals,
+    non_camel_case_types,
+    clippy::upper_case_acronyms
+)]
 ::windows_targets::link!(
     "clfsw32.dll" "system" "ReadLogNotification" fn read_log_notification(h_log : Handle,
     p_notification : * mut ClfsMgmtNotification, lp_overlapped : * mut Overlapped) ->
@@ -12,9 +17,20 @@ expression: bo.bindings
     "kernel32.dll" "system" "GetFileType" fn get_file_type(h_file : Handle) ->
     FileType::Enum
 );
+pub type Bool = i32;
+#[repr(C)]
+pub struct ClfsMgmtNotification {
+    pub notification: ClfsMgmtNotificationType::Enum,
+    pub lsn: ClsLsn,
+    pub log_is_pinned: u16,
+}
 pub mod ClfsMgmtNotificationType {
     pub type Enum = i32;
     pub const ClfsMgmtLogWriteNotification: Enum = 3;
+}
+#[repr(C)]
+pub struct ClsLsn {
+    pub internal: u64,
 }
 pub mod FileType {
     pub type Enum = u32;
@@ -25,17 +41,6 @@ pub mod GenericAccessRights {
     pub const GenericAll: Enum = 268435456;
     pub const GenericWrite: Enum = 1073741824;
     pub const GenericRead: Enum = 2147483648;
-}
-pub type Bool = i32;
-#[repr(C)]
-pub struct ClfsMgmtNotification {
-    pub notification: ClfsMgmtNotificationType::Enum,
-    pub lsn: ClsLsn,
-    pub log_is_pinned: u16,
-}
-#[repr(C)]
-pub struct ClsLsn {
-    pub internal: u64,
 }
 pub type Handle = isize;
 #[repr(C)]

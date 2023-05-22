@@ -1,0 +1,41 @@
+---
+source: tests/enums.rs
+expression: bo.bindings
+---
+#![allow(
+    non_snake_case,
+    non_upper_case_globals,
+    non_camel_case_types,
+    clippy::upper_case_acronyms
+)]
+::windows_targets::link!(
+    "user32.dll" "system" fn GetMessageW(lpMsg : * mut MSG, hWnd : HWND, wMsgFilterMin :
+    u32, wMsgFilterMax : u32) -> BOOL
+);
+::windows_targets::link!(
+    "user32.dll" "system" fn SetWindowPos(hWnd : HWND, hWndInsertAfter : HWND, X : i32, Y
+    : i32, cx : i32, cy : i32, uFlags : SET_WINDOW_POS_FLAGS::Enum) -> BOOL
+);
+pub type BOOL = i32;
+pub type HWND = isize;
+pub const HWND_NOTOPMOST: HWND = -2;
+pub type LPARAM = isize;
+#[repr(C)]
+pub struct MSG {
+    pub hwnd: HWND,
+    pub message: u32,
+    pub wParam: WPARAM,
+    pub lParam: LPARAM,
+    pub time: u32,
+    pub pt: POINT,
+}
+#[repr(C)]
+pub struct POINT {
+    pub x: i32,
+    pub y: i32,
+}
+pub mod SET_WINDOW_POS_FLAGS {
+    pub type Enum = u32;
+}
+pub type WPARAM = usize;
+

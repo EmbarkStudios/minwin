@@ -2,13 +2,18 @@
 source: tests/records.rs
 expression: bo.bindings
 ---
-#![allow(non_snake_case, non_upper_case_globals, non_camel_case_types)]
+#![allow(
+    non_snake_case,
+    non_upper_case_globals,
+    non_camel_case_types,
+    clippy::upper_case_acronyms
+)]
 ::windows_targets::link!(
     "kernel32.dll" "system" fn RtlCaptureContext(ContextRecord : * mut CONTEXT) -> ()
 );
 #[repr(C)]
 pub union ARM64_NT_NEON128 {
-    pub Anonymous: ::std::mem::ManuallyDrop<ARM64_NT_NEON128_0>,
+    pub Anonymous: ARM64_NT_NEON128_0,
     pub D: [f64; 2],
     pub S: [f32; 4],
     pub H: [u16; 8],
@@ -174,7 +179,7 @@ mod x86_64 {
     #[repr(C)]
     pub union CONTEXT_0 {
         pub FltSave: XSAVE_FORMAT,
-        pub Anonymous: ::std::mem::ManuallyDrop<CONTEXT_0_0>,
+        pub Anonymous: CONTEXT_0_0,
     }
     impl ::core::marker::Copy for CONTEXT_0 {}
     impl ::core::clone::Clone for CONTEXT_0 {
@@ -238,7 +243,7 @@ mod aarch64 {
     }
     #[repr(C)]
     pub union CONTEXT_0 {
-        pub Anonymous: ::std::mem::ManuallyDrop<CONTEXT_0_0>,
+        pub Anonymous: CONTEXT_0_0,
         pub X: [u64; 31],
     }
     impl ::core::marker::Copy for CONTEXT_0 {}
