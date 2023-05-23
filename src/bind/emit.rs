@@ -1,6 +1,7 @@
 mod constant;
 mod function;
 mod function_pointer;
+mod interface;
 mod ostream;
 mod record;
 mod shared;
@@ -141,26 +142,19 @@ impl<'r> Emit<'r> {
                     TypeKind::Class => {
                         let ident = self.config.make_ident(name, IdentKind::Record);
 
-                        let ts = if self.config.use_core {
-                            //self.emit_class(&mut os, reader, def)
-                            unreachable!()
-                        } else {
-                            quote! { pub type #ident = *mut ::core::ffi::c_void; }
-                        };
+                        anyhow::ensure!(
+                            !self.config.use_core,
+                            "unable to emit '{ident}', classes are not supported"
+                        );
 
-                        (ident, ts)
+                        (
+                            ident,
+                            quote! { pub type #ident = *mut ::core::ffi::c_void; },
+                        )
                     }
                     TypeKind::Interface => {
-                        let ident = self.config.make_ident(name, IdentKind::Record);
-
-                        let ts = if self.config.use_core {
-                            //self.emit_interface(&mut os, reader, def)
-                            unreachable!()
-                        } else {
-                            quote! { pub type #ident = *mut ::core::ffi::c_void; }
-                        };
-
-                        (ident, ts)
+                        self.emit_interface(&mut os, def);
+                        continue;
                     }
                     TypeKind::Enum => {
                         os.insert_enum(ty.clone());
@@ -193,6 +187,15 @@ impl<'r> Emit<'r> {
         } else {
             Ok(ts.to_string())
         }
+    }
+
+    #[inline]
+    fn get_interface_methods(
+        &self,
+        tname: wmr::TypeName<'_>,
+    ) -> Option<&std::collections::BTreeSet<String>> {
+        let full_name = format!("{}.{}", tname.namespace, tname.name);
+        self.ifaces.get(&full_name)
     }
 }
 

@@ -228,6 +228,10 @@ pub struct MinwinBindConfig {
     pub add_version_header: bool,
     /// If true, emits a link to the MSDN documentation for items that have it
     pub emit_docs: bool,
+    /// We don't emit actual implementations like `windows` has since they are
+    /// ridiculously overcomplicated and generic. However, it can be nice to have
+    /// little helpers if not using `windows-core`.
+    pub emit_com_helpers: bool,
 }
 
 impl Default for MinwinBindConfig {
@@ -242,6 +246,7 @@ impl Default for MinwinBindConfig {
             // We don't want this in tests
             add_version_header: !cfg!(debug_assertions),
             emit_docs: false,
+            emit_com_helpers: false,
         }
     }
 }

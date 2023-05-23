@@ -200,15 +200,19 @@ impl ToTokens for Value {
 
 use wmr::GUID;
 
-pub struct Guid<'r> {
-    pub value: GUID,
+pub struct GuidPrinter<'r> {
+    pub value: Option<GUID>,
     pub printer: TypePrinter<'r>,
 }
 
-impl<'r> ToTokens for Guid<'r> {
+impl<'r> ToTokens for GuidPrinter<'r> {
     fn to_tokens(&self, ts: &mut TokenStream) {
-        let GUID(a, b, c, d, e, f, g, h, i, j, k) = self.value;
         self.printer.to_tokens(ts);
+        let Some(GUID(a, b, c, d, e, f, g, h, i, j, k)) = self.value else {
+            ts.extend(quote!{::zeroed()});
+            return;
+        };
+
         ts.extend(format!("::from_u128(0x{a:08x}_{b:04x}_{c:04x}_{d:02x}{e:02x}_{f:02x}{g:02x}{h:02x}{i:02x}{j:02x}{k:02x})").parse::<TokenStream>().unwrap());
     }
 }
@@ -644,6 +648,30 @@ impl ToTokens for DocsPrinter {
     }
 }
 
+pub(crate) struct GenericsPrinter {
+    generics: Vec<Type>,
+    config: MinwinBindConfig,
+}
+
+impl GenericsPrinter {
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.generics.is_empty()
+    }
+
+    pub fn constraints(&self) -> ConstraintsPrinter<'_> {
+        ConstraintsPrinter { gp: self }
+    }
+}
+
+pub(crate) struct ConstraintsPrinter<'gp> {
+    gp: &'gp GenericsPrinter,
+}
+
+impl<'gp> ToTokens for ConstraintsPrinter<'gp> {
+    fn to_tokens(&self, ts: &mut TokenStream) {}
+}
+
 impl<'r> super::Emit<'r> {
     #[inline]
     pub(crate) fn type_printer(&self, ty: Type) -> TypePrinter<'r> {
@@ -655,8 +683,8 @@ impl<'r> super::Emit<'r> {
     }
 
     #[inline]
-    pub(crate) fn guid_printer(&self, guid: GUID) -> Guid<'r> {
-        Guid {
+    pub(crate) fn guid_printer(&self, guid: Option<GUID>) -> GuidPrinter<'r> {
+        GuidPrinter {
             value: guid,
             printer: TypePrinter {
                 r: self.reader,
@@ -766,5 +794,14 @@ impl<'r> super::Emit<'r> {
         }
 
         self.reader.type_is_copyable(ty)
+    }
+
+    pub(crate) fn generics_printer(&self, td: TypeDef) -> GenericsPrinter {
+        let generics = self.reader.type_def_generics(iface).collect();
+
+        GenericsPrinter {
+            generics,
+            config: self.config,
+        }
     }
 }

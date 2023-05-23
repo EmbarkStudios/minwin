@@ -166,11 +166,16 @@ impl<'names, 'r> Gatherer<'names, 'r> {
         }
 
         let kind = reader.type_def_kind(def);
-        let ty_name = reader.type_def_name(def);
+        let ty_name = type_name.name;
 
         let methods = if kind == TypeKind::Interface {
-            let Some(im) = self.interfaces.get(ty_name) else { return; };
-            Some(im)
+            let full_name = format!("{}.{ty_name}", type_name.namespace);
+            let Some(im) = self.interfaces.get(&full_name) else { return; };
+            if im.is_empty() {
+                None
+            } else {
+                Some(im)
+            }
         } else {
             None
         };

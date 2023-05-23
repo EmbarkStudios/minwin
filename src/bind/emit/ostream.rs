@@ -62,6 +62,12 @@ struct TypedefBlock {
     ts: Option<TokenStream>,
 }
 
+struct InterfaceBlock {
+    ident: Ident,
+    vtable: Option<TokenStream>,
+    imp: Option<TokenStream>,
+}
+
 enum TypeStream {
     EnumBlock(EnumBlock),
     Typedef(TypedefBlock),
@@ -77,6 +83,7 @@ pub struct OutputStream<'r> {
     types: BTreeMap<Type, TypeStream>,
     constants: BTreeMap<Ident, TokenStream>,
     functions: BTreeMap<(Ustr, bool), BTreeMap<(Ident, Attrs), (MethodDef, TokenStream)>>,
+    interfaces: BTreeMap<TypeDef, InterfaceBlock>,
 }
 
 impl<'r> OutputStream<'r> {
@@ -88,6 +95,7 @@ impl<'r> OutputStream<'r> {
             constants: BTreeMap::new(),
             types: BTreeMap::new(),
             functions: BTreeMap::new(),
+            interfaces: BTreeMap::new(),
         }
     }
 
@@ -181,6 +189,26 @@ impl<'r> OutputStream<'r> {
             .entry((library, is_system))
             .or_default()
             .insert((ident, attrs), (func, ts));
+    }
+
+    #[inline]
+    pub fn insert_vtable(&mut self, td: TypeDef, ident: Ident, vtable: TokenStream) {
+        self.interfaces.entry(td).or_insert_with(|| {
+            InterfaceBlock { ident, vtable: None, imp: None }
+        }).vtable = Some(vtable)
+    }
+
+    #[inline]
+    pub fn insert_interface(&mut self, td: TypeDef, ident: Ident, imp: TokenStream) {
+        self.interfaces.entry(td).or_insert_with(|| {
+            InterfaceBlock { ident, vtable: None, imp: None }
+        }).imp = Some(imp)
+    }
+
+    /// Checks whether the specified vtable has been inserted already
+    #[inline]
+    pub fn has_vtable(&mut self, td: TypeDef) -> bool {
+        self.interfaces.get(&td).and_then(|iface| iface.vtable.as_ref()).is_some()
     }
 
     pub fn finalize(self, config: crate::bind::MinwinBindConfig) -> TokenStream {
