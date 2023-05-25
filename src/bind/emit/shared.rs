@@ -414,12 +414,7 @@ impl<'r> ToTokens for TypePrinter<'r> {
                 ts.extend(quote! { #ptrs #element });
                 return;
             }
-            Type::GenericParam(generic) => {
-                panic!(
-                    "generic parameter '{}' is not supported",
-                    self.r.generic_param_name(*generic)
-                );
-            }
+            Type::GenericParam(generic) => self.r.generic_param_name(*generic),
             Type::WinrtArray(_) | Type::WinrtArrayRef(_) | Type::WinrtConstRef(_) => {
                 panic!("WinRT type is not supported");
             }
@@ -648,29 +643,38 @@ impl ToTokens for DocsPrinter {
     }
 }
 
-pub(crate) struct GenericsPrinter {
-    generics: Vec<Type>,
-    config: MinwinBindConfig,
-}
+// pub(crate) struct GenericsPrinter {
+//     generics: Vec<(String, Type)>,
+//     config: MinwinBindConfig,
+// }
 
-impl GenericsPrinter {
-    #[inline]
-    pub fn is_empty(&self) -> bool {
-        self.generics.is_empty()
-    }
+// impl GenericsPrinter {
+//     #[inline]
+//     pub fn is_empty(&self) -> bool {
+//         self.generics.is_empty()
+//     }
 
-    pub fn constraints(&self) -> ConstraintsPrinter<'_> {
-        ConstraintsPrinter { gp: self }
-    }
-}
+//     #[inline]
+//     pub fn push(&mut self, name: impl Into<String>, ty: Type) {
+//         self.generics.push((name.into(), ty))
+//     }
 
-pub(crate) struct ConstraintsPrinter<'gp> {
-    gp: &'gp GenericsPrinter,
-}
+//     pub fn constraints(&self) -> ConstraintsPrinter<'_> {
+//         ConstraintsPrinter { gp: self }
+//     }
+// }
 
-impl<'gp> ToTokens for ConstraintsPrinter<'gp> {
-    fn to_tokens(&self, ts: &mut TokenStream) {}
-}
+// pub(crate) struct ConstraintsPrinter<'gp> {
+//     gp: &'gp GenericsPrinter,
+// }
+
+// impl<'gp> ToTokens for ConstraintsPrinter<'gp> {
+//     fn to_tokens(&self, ts: &mut TokenStream) {
+//         ts.append('<');
+//         ts.append_separated(self.gp.generics.iter().map(|(s, _)| s), ',');
+//         ts.append('>');
+//     }
+// }
 
 impl<'r> super::Emit<'r> {
     #[inline]
@@ -796,12 +800,68 @@ impl<'r> super::Emit<'r> {
         self.reader.type_is_copyable(ty)
     }
 
-    pub(crate) fn generics_printer(&self, td: TypeDef) -> GenericsPrinter {
-        let generics = self.reader.type_def_generics(iface).collect();
+    // pub(crate) fn generics_printer(&self, td: TypeDef) -> GenericsPrinter {
+    //     let generics = self.reader.type_def_generics(iface).collect();
 
-        GenericsPrinter {
-            generics,
-            config: self.config,
-        }
-    }
+    //     GenericsPrinter {
+    //         generics,
+    //         config: self.config,
+    //     }
+    // }
 }
+
+// pub fn generic_params<'b>(
+//     &'b self,
+//     params: &'b [SignatureParam],
+// ) -> impl Iterator<Item = (usize, &SignatureParam)> + 'b {
+//     params
+//         .iter()
+//         .filter(move |param| self.reader.signature_param_is_convertible(param))
+//         .enumerate()
+// }
+// /// The generic param names (i.e., `T` in `fn foo<T>()`)
+// pub fn constraint_generics(&self, params: &[SignatureParam]) -> TokenStream {
+//     let mut generics = self
+//         .generic_params(params)
+//         .map(|(position, _)| -> TokenStream { format!("P{position}").into() })
+//         .peekable();
+
+//     if generics.peek().is_some() {
+//         quote!(#(#generics),*)
+//     } else {
+//         TokenStream::new()
+//     }
+// }
+// /// A `where` clause for some constrained generic params
+// pub fn where_clause(&self, params: &[SignatureParam]) -> TokenStream {
+//     let constraints = self.param_constraints(params);
+
+//     if !constraints.is_empty() {
+//         quote!(where #constraints)
+//     } else {
+//         quote!()
+//     }
+// }
+// fn param_constraints(&self, params: &[SignatureParam]) -> TokenStream {
+//     let mut tokens = TokenStream::new();
+//     let gen_name = |position| {
+//         let name: TokenStream = format!("P{position}").into();
+//         name
+//     };
+//     for (position, param) in self.generic_params(params) {
+//         match param.kind {
+//             SignatureParamKind::TryInto => {
+//                 let name: TokenStream = gen_name(position);
+//                 let into = self.type_name(&param.ty);
+//                 tokens.combine(&quote! { #name: ::windows_core::TryIntoParam<#into>, });
+//             }
+//             SignatureParamKind::IntoParam => {
+//                 let name: TokenStream = gen_name(position);
+//                 let into = self.type_name(&param.ty);
+//                 tokens.combine(&quote! { #name: ::windows_core::IntoParam<#into>, });
+//             }
+//             _ => {}
+//         }
+//     }
+//     tokens
+// }

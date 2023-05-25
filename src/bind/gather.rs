@@ -148,6 +148,7 @@ impl<'names, 'r> Gatherer<'names, 'r> {
 
         // Ensure that we get _all_ the types that match
         let type_name = reader.type_def_type_name(def);
+
         if !type_name.namespace.is_empty() {
             for row in reader.get(type_name) {
                 if def != row {

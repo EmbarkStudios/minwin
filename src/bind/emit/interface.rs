@@ -1,5 +1,9 @@
+use crate::bind::COMStyle;
+
 use super::*;
-use quote::format_ident;
+use quote::{format_ident, TokenStreamExt};
+use syn::Ident;
+use wmr::{Signature, SignatureKind};
 
 impl<'r> Emit<'r> {
     pub(super) fn emit_interface(
@@ -11,45 +15,48 @@ impl<'r> Emit<'r> {
         let type_name = reader.type_def_type_name(iface);
         let ident = self.config.make_ident(type_name.name, IdentKind::Record);
 
+        if reader.type_def_flags(def).contains(TypeAttributes::WINRT) {
+            anyhow::bail!(
+                "The WinRT interface '{}' is not supported in this mode, please use `bindgen` mode",
+                type_name.name
+            );
+        }
+
         let Some(methods) = self.get_interface_methods(type_name) else {
             os.insert_interface(iface, ident, quote! { pub type #ident = *mut ::core::ffi::c_void; });
             return Ok(());
         };
 
-        self.emit_vtable(os, iface, Some(methods))?;
+        // While we _could_ support this, it's not worth the effort for an extremely
+        // few amount of types that most crates won't ever use
+        anyhow::ensure!(
+            reader.type_def_generics(row).count() == 0 || self.config.use_core,
+            "'{}' requires the use of the `windows-core` crate",
+            type_name.name
+        );
 
-        // Note this differs from the simple type alias above by allowing the user
-        // to provide their own impl of the struct outside of the generated bindings
-        let ts = if self.config.use_core {
-            self.emit_interface_core(iface, &ident)?
-        } else if self.config.emit_com_helpers {
-            let vtbl_ident = format_ident!("{name}_Vtbl");
-            quote! {
-                #[repr(transparent)]
-                pub struct #ident(ComObject<#vtbl_ident>);
-            }
-        } else {
-            quote! {
-                #[repr(transparent)]
-                pub struct #ident(::core::ptr::NonNull<::core::ffi::c_void>);
-            }
-        };
+        self.emit_vtable(os, iface)?;
 
-        
+        let ts = self.emit_interface_impl(iface, &ident)?;
         os.insert_interface(iface, ident, ts);
 
         Ok(())
     }
 
-    /// Generate a vtable, replacing any methods that the user hasn't requested
-    /// with a simple `usize` to preserve the layout of the vtable, without
-    /// needing to pull in and compile any types exclusive to those skipped methods
-    fn emit_vtable(
-        &self,
-        os: &mut OutputStream,
-        iface: TypeDef,
-        methods: Option<&std::collections::BTreeSet<String>>,
-    ) -> anyhow::Result<()> {
+    /// Generates an interfaces vtable, and all ancestors vtables.
+    ///
+    /// This replaces any methods that the user hasn't requested with a simple
+    /// `usize` to preserve the layout of the vtable, but avoiding the need to
+    /// emit any types exclusive to those skipped methods
+    ///
+    /// ```
+    /// #[repr(C)]
+    /// pub struct IModalWindow_Vtbl {
+    ///     pub base__: ::windows_core::IUnknown_Vtbl,
+    ///     pub Show: unsafe extern "system" fn(this: *mut ::core::ffi::c_void, hwndowner: HWND) -> ::windows_core::HRESULT,
+    /// }
+    /// ```
+    fn emit_vtable(&self, os: &mut OutputStream, iface: TypeDef) -> anyhow::Result<()> {
         if os.has_vtable(iface) {
             return Ok(());
         }
@@ -58,11 +65,7 @@ impl<'r> Emit<'r> {
         let vtables = reader.type_def_vtables(iface);
         for base in &vtables {
             let Type::TypeDef((base, _)) = base else { continue; };
-            self.emit_vtable(
-                os,
-                *base,
-                self.get_interface_methods(reader.type_def_type_name(*base)),
-            )?;
+            self.emit_vtable(os, *base)?;
         }
 
         let name = reader.type_def_name(iface);
@@ -104,36 +107,48 @@ impl<'r> Emit<'r> {
             fields.push(pfield);
         }
 
-        for method in reader.type_def_methods(iface) {
-            let name = reader.method_def_name(method)
-            if name == ".ctor" {
-                continue;
+        fields.extend(self.method_iter(iface).map(|meth| match meth {
+            Method::Skip { ident } => {
+                quote! { #ident: usize }
             }
+            Method::Emit { ident, sig, .. } => {
+                let params = self.param_printer(&sig);
+                let ret = sig.return_type.as_ref().map(|rt| {
+                    let rt = self.type_printer(rt.clone());
+                    quote! { -> #rt }
+                });
 
-            let fname = self.config.make_ident(name, IdentKind::Field);
-
-            if !methods.map(|m| m.contains(name)).unwrap_or_default() {
-                fields.push(quote! { #fname: usize });
-                continue;
+                quote! {
+                    pub #ident: unsafe extern "system" fn(#params)#ret
+                }
             }
+        }));
 
-            let sig = reader.method_def_signature(method, &[]);
-            let params = self.param_printer(&sig);
-            let ret = sig.return_type.as_ref().map(|rt| {
-                let rt = self.type_printer(rt.clone());
-                quote! { -> #rt }
-            });
+        let generics: Vec<_> = reader.type_def_generics(iface).collect();
 
-            let meth = quote! {
-                pub #fname: unsafe extern "system" fn(#params)#ret
-            };
-            fields.push(meth);
-        }
+        let (generics, phantoms) = (!generics.is_empty())
+            .then(|| {
+                let names = generics.iter().map(|g| self.type_printer(g.clone()));
+
+                let phantoms = generics.into_iter().map(|g| {
+                    let tp = self.type_printer(g);
+                    quote! { #tp: ::core::marker::PhantomData<#tp> }
+                });
+
+                (
+                    quote! { <#(#names),*> },
+                    quote! {
+                        #(#phantoms),*
+                    },
+                )
+            })
+            .map(|(g, p)| (Some(g), Some(p)));
 
         let ts = quote! {
             #[repr(C)]
-            pub struct #ident {
+            pub struct #ident #generics {
                 #(#fields),*
+                #phantoms
             }
         };
 
@@ -141,28 +156,79 @@ impl<'r> Emit<'r> {
         Ok(())
     }
 
-    fn emit_interface_core(&self, iface: TypeDef, ident: &Ident) -> anyhow::Result<TokenStream> {
-        let reader = self.reader;
-
-        let mut methods = Vec::new();
-        for meth in reader.type_def_methods(iface) {
-            methods.push(self.emit_core_method(iface, meth));
+    /// Returns a token stream of the interface implementations and all of the
+    /// requested items
+    ///
+    /// ```
+    /// pub struct IModalWindow(::windows_core::IUnknown);
+    ///
+    /// impl IModalWindow {
+    ///     // methods which go via vtable
+    /// }
+    ///
+    /// ::windows_core::imp::interface_hierarchy!(IModalWindow, ::windows_core::IUnknown);
+    /// impl ::core::cmp::PartialEq for IModalWindow {
+    ///     fn eq(&self, other: &Self) -> bool {
+    ///         self.0 == other.0
+    ///     }
+    /// }
+    ///
+    /// impl ::core::cmp::Eq for IModalWindow {}
+    /// impl ::core::fmt::Debug for IModalWindow {
+    ///     fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+    ///         f.debug_tuple("IModalWindow").field(&self.0).finish()
+    ///     }
+    /// }
+    ///
+    /// unsafe impl ::windows_core::Interface for IModalWindow {
+    ///     type Vtable = IModalWindow_Vtbl;
+    /// }
+    ///
+    /// impl ::core::clone::Clone for IModalWindow {
+    ///     fn clone(&self) -> Self {
+    ///         Self(self.0.clone())
+    ///     }
+    /// }
+    ///
+    /// unsafe impl ::windows_core::ComInterface for IModalWindow {
+    ///     const IID: ::windows_core::GUID = ::windows_core::GUID::from_u128(0xb4db1657_70d7_485e_8e3e_6fcb5a5c1802);
+    /// }
+    /// ```
+    fn emit_interface_impl(&self, iface: TypeDef, ident: &Ident) -> anyhow::Result<TokenStream> {
+        if self.config.com_style == COMStyle::None {
+            return Ok(quote! {
+                #[repr(transparent)]
+                pub struct #ident(::core::ptr::NonNull<::core::ffi::c_void>);
+            });
         }
 
-        let generics = self.generics_printer(iface);
+        let reader = self.reader;
 
-        let com_iface = if generics.is_empty() {
-            self.guid_printer(reader.type_def_guid(iface))
+        let methods: Vec<_> = self
+            .method_iter(iface)
+            .filter_map(|meth| match meth {
+                Method::Emit { ident, name, sig } => {
+                    let mts = self.emit_method_impl(iface, ident, sig);
+                    Some(mts)
+                }
+                Method::Skip { .. } => None,
+            })
+            .collect();
 
+        let has_generics = reader.type_def_generics(iface).count() > 0;
+        let tp = self.type_printer(Type::GUID);
+
+        let com_iface = if !has_generics {
+            let guid = self.guid_printer(reader.type_def_guid(iface));
             quote! {
                 unsafe impl ::windows_core::ComInterface for #ident {
-                    const IID: ::windows_core::GUID = #guid;
+                    const IID: #tp = #guid;
                 }
             }
         } else {
             quote! {
                 unsafe impl ::windows_core::ComInterface for #ident {
-                    const IID: ::windows_core::GUID = ::windows_core::GUID::from_signature(<Self as ::windows_core::RuntimeType>::SIGNATURE);
+                    const IID: #tp = #tp::from_signature(<Self as ::windows_core::RuntimeType>::SIGNATURE);
                 }
             }
         };
@@ -171,362 +237,445 @@ impl<'r> Emit<'r> {
             #[repr(transparent)]
             pub struct #ident(::windows_core::IUnknown);
 
-            #com_iface
-
             impl #ident {
                 #(#methods)
             }
+
+            #com_iface
         };
 
         Ok(its)
     }
 
-    fn emit_core_method(&self, iface: TypeDef, method: MethodDef) -> TokenStream {
-        use wmr::SignatureKind;
-
+    /// Emits methods which wrap the vtable function pointer, handling arguments
+    /// and return values
+    ///
+    /// ```rust
+    /// impl IModalWindow {
+    ///     pub unsafe fn Show<P0>(&self, hwndowner: P0) -> ::windows_core::Result<()>
+    ///     where
+    ///         P0: ::windows_core::IntoParam<super::super::Foundation::HWND>,
+    ///     {
+    ///         (::windows_core::Interface::vtable(self).Show)(::windows_core::Interface::as_raw(self), hwndowner.into_param().abi()).ok()
+    ///     }
+    /// }
+    /// ```
+    fn emit_method_impl(&self, iface: TypeDef, ident: Ident, sig: Signature) -> TokenStream {
         let reader = self.reader;
-        let sig = reader.method_def_signature(method, &[]);
-        
-        let sig_kind = reader.signature_kind(&sig);
 
+        let MethodParts {
+            generics,
+            where_clause,
+            params,
+            args,
+        } = self.make_method_parts(&sig);
+
+        let vtable = quote! { ::windows_core::Interface::vtable(self).#ident };
+        let this = quote! { ::windows_core::Interface::as_raw(self) };
+
+        let sig_kind = reader.signature_kind(&sig);
         match sig_kind {
             // Methods which essentially wrap IUnknown::QueryInterface but are
             // specific to a particular type
             SignatureKind::Query(_) => {
-                let args = self.args(&signature.params, sig_kind);
-                let params = self.params(&signature.params, sig_kind);
-                let generics = expand_generics(generics, quote!(T));
-                let where_clause =
-                    expand_where_clause(where_clause, quote!(T: ::windows_core::ComInterface));
-    
                 quote! {
-                    pub unsafe fn #name<#generics>(&self, #params) -> ::windows_core::Result<T> #where_clause {
-                        let mut result__ = ::std::ptr::null_mut();
-                        (::windows_core::Interface::vtable(self)#bases.#vname)(::windows_core::Interface::as_raw(self), #args).from_abi(result__)
+                    pub unsafe fn #ident #generics (&self, #params) -> ::windows_core::Result<T> #where_clause {
+                        let mut result__ = ::std::mem::MaybeUninit::uninit();
+                        (#vtable)(#this, #args).from_abi(result__)
+                    }
+                }
+            }
+            // Ditto as above, but the result is optional and thus an out param instead
+            SignatureKind::QueryOptional(_) => {
+                quote! {
+                    pub unsafe fn #ident #generics (&self, #params) -> ::windows_core::Result<()> #where_clause {
+                        (#vtable)(#this, #args).ok()
+                    }
+                }
+            }
+            // Typical methods that returns a simple type or error
+            SignatureKind::ResultValue => {
+                let return_type = sig.params.last().unwrap().ty.deref();
+                let rt = self.type_printer(return_type);
+
+                quote! {
+                    pub unsafe fn #ident #generics (&self, #params) -> ::windows_core::Result<#rt> #where_clause {
+                        let mut result__ = ::windows_core::zeroed::<#rt>();
+                        (#vtable)(#this, #args).from_abi(result__)
+                    }
+                }
+            }
+            // Methods that don't return a value other than HRESULT
+            SignatureKind::ResultVoid => {
+                quote! {
+                    pub unsafe fn #name #generics (&self, #params) -> ::windows_core::Result<()> #where_clause {
+                        (#vtable)(#this, #args).ok()
+                    }
+                }
+            }
+            // Methods that infallibly return a value
+            SignatureKind::ReturnValue => {
+                let return_type = sig.params.last().unwrap().ty.deref();
+                let is_nullable = reader.type_is_nullable(&return_type);
+                let rt = self.type_printer(return_type);
+
+                let res = if is_nullable {
+                    quote! { ::windows_core::from_abi(result__) }
+                } else {
+                    quote! { ::std::mem::transmute(result__) }
+                };
+
+                quote! {
+                    pub unsafe fn #ident #generics (&self, #params) -> #rt #where_clause {
+                        let mut result__ = ::windows_core::zeroed::<#rt>();
+                        (#vtable)(#this, #args);
+                        #res
+                    }
+                }
+            }
+            // Methods that infallibly return a record via out param
+            SignatureKind::ReturnStruct => {
+                let rt = self.type_printer(sig.return_type.as_ref().unwrap().clone());
+
+                quote! {
+                    pub unsafe fn #ident #generics (&self, #params) -> #rt #where_clause {
+                        let mut result__ = ::core::mem::zeroed::<#rt>();
+                        (#vtable)(#this, #args);
+                        result__
+                    }
+                }
+            }
+            // The return type is forwarded
+            SignatureKind::PreserveSig => {
+                let rt = sig.return_type.as_ref().and_then(|rt| match rt {
+                    Type::Void if reader.method_def_does_not_return(sig.def) => {
+                        Some(quote! { -> ! })
+                    }
+                    Type::Void => None,
+                    _ => {
+                        let rt = self.type_printer(rt.clone());
+                        Some(quote! { -> #rt })
+                    }
+                });
+
+                quote! {
+                    pub unsafe fn #ident #generics (&self, #params) #rt #where_clause {
+                        (#vtable)(#this, #args)
+                    }
+                }
+            }
+            // Methods that don't return anything
+            SignatureKind::ReturnVoid => {
+                quote! {
+                    pub unsafe fn #ident #generics (&self, #params) #where_clause {
+                        (#vtable)(#this, #args)
                     }
                 }
             }
         }
-            
-            let name = method_names.add(gen, method);
-            let vname = virtual_names.add(gen, method);
-            let generics = gen.constraint_generics(&signature.params);
-            let where_clause = gen.where_clause(&signature.params);
-            let mut cfg = gen.reader.signature_cfg(&signature);
-            cfg.add_feature(gen.reader.type_def_namespace(def));
-            let doc = gen.cfg_method_doc(&cfg);
-            let features = gen.cfg_features(&cfg);
-        
-            if kind == InterfaceKind::None {
-                return quote! {};
+    }
+
+    fn make_method_parts(&self, sig: &Signature) -> MethodParts {
+        let reader = self.reader;
+        let sig_kind = reader.signature_kind(sig);
+
+        let mut generics = Vec::new();
+        let mut params = Vec::new();
+        let mut args = Vec::new();
+
+        if sig_kind == SignatureKind::ReturnStruct {
+            args.push(quote! { &mut result__ });
+        }
+
+        // For QueryOptional methods that return an pointer rather than an interface directly
+        let mut push_result_param = false;
+        // When emitting bindgen-style COM bindings every many params use generic
+        // conversions to make the API easier to use but vastly more complicated :p
+        let mut generic_index = -1;
+
+        for (pos, param) in sig.params.iter().enumerate() {
+            if reader.signature_param_is_convertible(param) {
+                generic_index += 1;
             }
-        
-            let mut bases = quote! {};
-        
-            for _ in 0..base_count {
-                bases.combine(&quote! { .base__ });
-            }
-        
-            let kind = gen.reader.signature_kind(&signature);
-            match kind {
-                
-                SignatureKind::QueryOptional(_) => {
-                    let args = gen.win32_args(&signature.params, kind);
-                    let params = gen.win32_params(&signature.params, kind);
-                    let generics = expand_generics(generics, quote!(T));
-                    let where_clause =
-                        expand_where_clause(where_clause, quote!(T: ::windows_core::ComInterface));
-        
-                    quote! {
-                        #doc
-                        #features
-                        pub unsafe fn #name<#generics>(&self, #params result__: *mut ::core::option::Option<T>) -> ::windows_core::Result<()> #where_clause {
-                            (::windows_core::Interface::vtable(self)#bases.#vname)(::windows_core::Interface::as_raw(self), #args).ok()
-                        }
-                    }
+
+            match sig_kind {
+                SignatureKind::Query(query) if query.object == pos => {
+                    args.push(quote! { &mut result__ });
                 }
-                SignatureKind::ResultValue => {
-                    let args = gen.win32_args(&signature.params, kind);
-                    let params = gen.win32_params(&signature.params, kind);
-                    let return_type = signature.params[signature.params.len() - 1].ty.deref();
-                    let return_type = gen.type_name(&return_type);
-        
-                    quote! {
-                        #doc
-                        #features
-                        pub unsafe fn #name<#generics>(&self, #params) -> ::windows_core::Result<#return_type> #where_clause {
-                            let mut result__ = ::windows_core::zeroed::<#return_type>();
-                            (::windows_core::Interface::vtable(self)#bases.#vname)(::windows_core::Interface::as_raw(self), #args).from_abi(result__)
-                        }
-                    }
+                SignatureKind::Query(query) | SignatureKind::QueryOptional(query)
+                    if query.guid == pos =>
+                {
+                    args.push(quote! { &<T as ::windows_core::ComInterface>::IID });
                 }
-                SignatureKind::ResultVoid => {
-                    let args = gen.win32_args(&signature.params, kind);
-                    let params = gen.win32_params(&signature.params, kind);
-        
-                    quote! {
-                        #doc
-                        #features
-                        pub unsafe fn #name<#generics>(&self, #params) -> ::windows_core::Result<()> #where_clause {
-                            (::windows_core::Interface::vtable(self)#bases.#vname)(::windows_core::Interface::as_raw(self), #args).ok()
-                        }
-                    }
+                SignatureKind::QueryOptional(query) if query.object == pos => {
+                    args.push(quote! { result__ as *mut _ as *mut _ });
+                    push_result_param = true;
                 }
-                SignatureKind::ReturnValue => {
-                    let args = gen.win32_args(&signature.params, kind);
-                    let params = gen.win32_params(&signature.params, kind);
-                    let return_type = signature.params[signature.params.len() - 1].ty.deref();
-                    let is_nullable = gen.reader.type_is_nullable(&return_type);
-                    let return_type = gen.type_name(&return_type);
-        
-                    if is_nullable {
-                        quote! {
-                            #doc
-                            #features
-                            pub unsafe fn #name<#generics>(&self, #params) -> ::windows_core::Result<#return_type> #where_clause {
-                                let mut result__ = ::windows_core::zeroed::<#return_type>();
-                                (::windows_core::Interface::vtable(self)#bases.#vname)(::windows_core::Interface::as_raw(self), #args);
-                                ::windows_core::from_abi(result__)
+                SignatureKind::ReturnValue | SignatureKind::ResultValue
+                    if params.len() - 1 == pos =>
+                {
+                    args.push(quote! { &mut result__ });
+                }
+                _ => {
+                    let name = self
+                        .config
+                        .make_ident(reader.param_name(param.def), IdentKind::Param);
+                    let flags = reader.param_flags(param.def);
+                    let param_ty = match param.kind {
+                        SignatureParamKind::ArrayFixed(fixed) => {
+                            let ty = param.ty.deref();
+                            let tp = self.type_printer(ty);
+                            let len = Literal::u32_unsuffixed(fixed as _);
+                            let ty = if reader
+                                .param_flags(param.def)
+                                .contains(ParamAttributes::OUTPUT)
+                            {
+                                quote! { &mut [#tp; #len] }
+                            } else {
+                                quote! { &[#tp; #len] }
+                            };
+
+                            let ts = if reader
+                                .param_flags(param.def)
+                                .contains(ParamAttributes::OPTIONAL)
+                            {
+                                quote! { ::core::option::Option<#ty> }
+                            } else {
+                                ty
+                            };
+
+                            Some(ts)
+                        }
+                        SignatureParamKind::ArrayRelativeLen(_) => {
+                            let ty = param.ty.deref();
+                            let tp = self.type_printer(ty);
+                            let ty = if reader
+                                .param_flags(param.def)
+                                .contains(ParamAttributes::OUTPUT)
+                            {
+                                quote! { &mut [#tp] }
+                            } else {
+                                quote! { &[#tp] }
+                            };
+
+                            let ts = if reader
+                                .param_flags(param.def)
+                                .contains(ParamAttributes::OPTIONAL)
+                            {
+                                quote! { #name: ::core::option::Option<#ty> }
+                            } else {
+                                ty
+                            };
+
+                            Some(ts)
+                        }
+                        SignatureParamKind::ArrayRelativeByteLen(_) => {
+                            let ty = if reader
+                                .param_flags(param.def)
+                                .contains(ParamAttributes::OUTPUT)
+                            {
+                                quote! { &mut [u8] }
+                            } else {
+                                quote! { &[u8] }
+                            };
+
+                            let ts = if reader
+                                .param_flags(param.def)
+                                .contains(ParamAttributes::OPTIONAL)
+                            {
+                                quote! { ::core::option::Option<#ty> }
+                            } else {
+                                ty
+                            };
+
+                            Some(ts)
+                        }
+                        SignatureParamKind::ArrayRelativePtr(_) => None,
+                        SignatureParamKind::TryInto | SignatureParamKind::IntoParam => {
+                            let name = format_ident!("P{generic_index}");
+                            let tp = self.type_printer(param.ty.clone());
+
+                            if self.config.com_style == COMStyle::Bindgen {
+                                let constraint = if param.kind == SignatureParamKind::TryInto {
+                                    quote! { ::windows_core::TryIntoParam<#tp> }
+                                } else {
+                                    quote! { ::windows_core::IntoParam<#tp> }
+                                };
+
+                                generics.push((name.clone(), constraint));
+                                Some(name.into())
+                            } else {
+                                Some(quote! { #tp })
                             }
                         }
-                    } else {
-                        quote! {
-                            #doc
-                            #features
-                            pub unsafe fn #name<#generics>(&self, #params) -> #return_type #where_clause {
-                                let mut result__ = ::windows_core::zeroed::<#return_type>();
-                                (::windows_core::Interface::vtable(self)#bases.#vname)(::windows_core::Interface::as_raw(self), #args);
-                                ::std::mem::transmute(result__)
+                        SignatureParamKind::OptionalPointer => {
+                            let tp = self.type_printer(param.ty.clone());
+                            Some(quote! { ::core::option::Option<#tp> })
+                        }
+                        SignatureParamKind::ValueType | SignatureParamKind::Blittable => {
+                            let tp = self.type_printer(param.ty.clone());
+                            Some(quote! { #tp })
+                        }
+                        SignatureParamKind::Other => {
+                            let tp = self.type_printer(param.ty.clone());
+                            Some(quote! { &#tp })
+                        }
+                    };
+
+                    if let Some(ty) = param_ty {
+                        params.push(quote! { #name: #ty });
+                    }
+
+                    let arg_ts = match param.kind {
+                        SignatureParamKind::ArrayFixed(_)
+                        | SignatureParamKind::ArrayRelativeLen(_)
+                        | SignatureParamKind::ArrayRelativeByteLen(_) => {
+                            let map = if flags.contains(ParamAttributes::OPTIONAL) {
+                                quote! { #name.as_deref().map_or(::core::ptr::null(), |slice| slice.as_ptr()) }
+                            } else {
+                                quote! { #name.as_ptr() }
+                            };
+                            quote! { ::core::mem::transmute(#map) }
+                        }
+                        SignatureParamKind::ArrayRelativePtr(relative) => {
+                            let name = self.config.make_ident(
+                                reader.param_name(params[relative].def),
+                                IdentKind::Param,
+                            );
+                            let flags = reader.param_flags(params[relative].def);
+                            if flags.contains(ParamAttributes::OPTIONAL) {
+                                quote! { #name.as_deref().map_or(0, |slice| slice.len() as _) }
+                            } else {
+                                quote! { #name.len() as _ }
                             }
                         }
-                    }
-                }
-                SignatureKind::ReturnStruct => {
-                    let args = gen.win32_args(&signature.params, kind);
-                    let params = gen.win32_params(&signature.params, kind);
-                    let return_type = gen.type_name(&signature.return_type);
-        
-                    quote! {
-                        #doc
-                        #features
-                        pub unsafe fn #name<#generics>(&self, #params) -> #return_type #where_clause {
-                            let mut result__: #return_type = ::core::mem::zeroed();
-                            (::windows_core::Interface::vtable(self)#bases.#vname)(::windows_core::Interface::as_raw(self), &mut result__, #args);
-                            result__
+                        SignatureParamKind::TryInto => {
+                            if self.config.com_style == COMStyle::Bindgen {
+                                quote! { #name.try_into_param()?.abi() }
+                            } else {
+                                quote! { #name }
+                            }
                         }
-                    }
-                }
-                SignatureKind::PreserveSig => {
-                    let args = gen.win32_args(&signature.params, kind);
-                    let params = gen.win32_params(&signature.params, kind);
-                    let return_type = gen.return_sig(&signature);
-        
-                    quote! {
-                        #doc
-                        #features
-                        pub unsafe fn #name<#generics>(&self, #params) #return_type #where_clause {
-                            (::windows_core::Interface::vtable(self)#bases.#vname)(::windows_core::Interface::as_raw(self), #args)
+                        SignatureParamKind::IntoParam => {
+                            if self.config.com_style == COMStyle::Bindgen {
+                                quote! { #name.into_param().abi() }
+                            } else {
+                                quote! { #name }
+                            }
                         }
-                    }
-                }
-                SignatureKind::ReturnVoid => {
-                    let args = gen.win32_args(&signature.params, kind);
-                    let params = gen.win32_params(&signature.params, kind);
-        
-                    quote! {
-                        #doc
-                        #features
-                        pub unsafe fn #name<#generics>(&self, #params) #where_clause {
-                            (::windows_core::Interface::vtable(self)#bases.#vname)(::windows_core::Interface::as_raw(self), #args)
+                        SignatureParamKind::OptionalPointer => {
+                            if flags.contains(ParamAttributes::OUTPUT) {
+                                quote! { ::core::mem::transmute(#name.unwrap_or(::std::ptr::null_mut())) }
+                            } else {
+                                quote! { ::core::mem::transmute(#name.unwrap_or(::std::ptr::null())) }
+                            }
                         }
-                    }
+                        SignatureParamKind::ValueType => {
+                            quote! { #name }
+                        }
+                        SignatureParamKind::Blittable => {
+                            quote! { ::core::mem::transmute(#name) }
+                        }
+                        SignatureParamKind::Other => {
+                            quote! { ::core::mem::transmute_copy(#name) }
+                        }
+                    };
+
+                    args.push(arg_ts);
                 }
             }
         }
 
-        pub fn win32_args(&self, params: &[SignatureParam], kind: SignatureKind) -> TokenStream {
-            let mut tokens = quote! {};
-    
-            for (position, param) in params.iter().enumerate() {
-                let new = match kind {
-                    SignatureKind::Query(query) if query.object == position => {
-                        quote! { &mut result__, }
-                    }
-                    SignatureKind::ReturnValue | SignatureKind::ResultValue
-                        if params.len() - 1 == position =>
-                    {
-                        quote! { &mut result__, }
-                    }
-                    SignatureKind::QueryOptional(query) if query.object == position => {
-                        quote! { result__ as *mut _ as *mut _, }
-                    }
-                    SignatureKind::Query(query) | SignatureKind::QueryOptional(query)
-                        if query.guid == position =>
-                    {
-                        quote! { &<T as ::windows_core::ComInterface>::IID, }
-                    }
-                    _ => {
-                        let name = self.param_name(param.def);
-                        let flags = self.reader.param_flags(param.def);
-                        match param.kind {
-                            SignatureParamKind::ArrayFixed(_)
-                            | SignatureParamKind::ArrayRelativeLen(_)
-                            | SignatureParamKind::ArrayRelativeByteLen(_) => {
-                                let map = if flags.contains(ParamAttributes::OPTIONAL) {
-                                    quote! { #name.as_deref().map_or(::core::ptr::null(), |slice|slice.as_ptr()) }
-                                } else {
-                                    quote! { #name.as_ptr() }
-                                };
-                                quote! { ::core::mem::transmute(#map), }
-                            }
-                            SignatureParamKind::ArrayRelativePtr(relative) => {
-                                let name = self.param_name(params[relative].def);
-                                let flags = self.reader.param_flags(params[relative].def);
-                                if flags.contains(ParamAttributes::OPTIONAL) {
-                                    quote! { #name.as_deref().map_or(0, |slice|slice.len() as _), }
-                                } else {
-                                    quote! { #name.len() as _, }
-                                }
-                            }
-                            SignatureParamKind::TryInto => {
-                                quote! { #name.try_into_param()?.abi(), }
-                            }
-                            SignatureParamKind::IntoParam => {
-                                quote! { #name.into_param().abi(), }
-                            }
-                            SignatureParamKind::OptionalPointer => {
-                                if flags.contains(ParamAttributes::OUTPUT) {
-                                    quote! { ::core::mem::transmute(#name.unwrap_or(::std::ptr::null_mut())), }
-                                } else {
-                                    quote! { ::core::mem::transmute(#name.unwrap_or(::std::ptr::null())), }
-                                }
-                            }
-                            SignatureParamKind::ValueType => {
-                                quote! { #name, }
-                            }
-                            SignatureParamKind::Blittable => {
-                                quote! { ::core::mem::transmute(#name), }
-                            }
-                            SignatureParamKind::Other => {
-                                quote! { ::core::mem::transmute_copy(#name), }
-                            }
-                        }
-                    }
-                };
-                tokens.combine(&new)
-            }
-    
-            tokens
+        if push_result_param {
+            params.push(quote! { result__: *mut ::core::option::Option<T> });
         }
-        pub fn win32_params(&self, params: &[SignatureParam], kind: SignatureKind) -> TokenStream {
-            let mut tokens = quote! {};
-    
-            let mut generic_params = self.generic_params(params);
-            for (position, param) in params.iter().enumerate() {
-                match kind {
-                    SignatureKind::Query(query) | SignatureKind::QueryOptional(query) => {
-                        if query.object == position || query.guid == position {
-                            continue;
-                        }
-                    }
-                    SignatureKind::ReturnValue | SignatureKind::ResultValue
-                        if params.len() - 1 == position =>
-                    {
-                        continue;
-                    }
-                    _ => {}
-                }
-    
-                let name = self.param_name(param.def);
-    
-                match param.kind {
-                    SignatureParamKind::ArrayFixed(fixed) => {
-                        let ty = param.ty.deref();
-                        let ty = self.type_default_name(&ty);
-                        let len = Literal::u32_unsuffixed(fixed as _);
-                        let ty = if self
-                            .reader
-                            .param_flags(param.def)
-                            .contains(ParamAttributes::OUTPUT)
-                        {
-                            quote! { &mut [#ty; #len] }
-                        } else {
-                            quote! { &[#ty; #len] }
-                        };
-                        if self
-                            .reader
-                            .param_flags(param.def)
-                            .contains(ParamAttributes::OPTIONAL)
-                        {
-                            tokens.combine(&quote! { #name: ::core::option::Option<#ty>, });
-                        } else {
-                            tokens.combine(&quote! { #name: #ty, });
-                        }
-                    }
-                    SignatureParamKind::ArrayRelativeLen(_) => {
-                        let ty = param.ty.deref();
-                        let ty = self.type_default_name(&ty);
-                        let ty = if self
-                            .reader
-                            .param_flags(param.def)
-                            .contains(ParamAttributes::OUTPUT)
-                        {
-                            quote! { &mut [#ty] }
-                        } else {
-                            quote! { &[#ty] }
-                        };
-                        if self
-                            .reader
-                            .param_flags(param.def)
-                            .contains(ParamAttributes::OPTIONAL)
-                        {
-                            tokens.combine(&quote! { #name: ::core::option::Option<#ty>, });
-                        } else {
-                            tokens.combine(&quote! { #name: #ty, });
-                        }
-                    }
-                    SignatureParamKind::ArrayRelativeByteLen(_) => {
-                        let ty = if self
-                            .reader
-                            .param_flags(param.def)
-                            .contains(ParamAttributes::OUTPUT)
-                        {
-                            quote! { &mut [u8] }
-                        } else {
-                            quote! { &[u8] }
-                        };
-                        if self
-                            .reader
-                            .param_flags(param.def)
-                            .contains(ParamAttributes::OPTIONAL)
-                        {
-                            tokens.combine(&quote! { #name: ::core::option::Option<#ty>, });
-                        } else {
-                            tokens.combine(&quote! { #name: #ty, });
-                        }
-                    }
-                    SignatureParamKind::ArrayRelativePtr(_) => {}
-                    SignatureParamKind::TryInto | SignatureParamKind::IntoParam => {
-                        let (position, _) = generic_params.next().unwrap();
-                        let kind: TokenStream = format!("P{position}").into();
-                        tokens.combine(&quote! { #name: #kind, });
-                    }
-                    SignatureParamKind::OptionalPointer => {
-                        let kind = self.type_default_name(&param.ty);
-                        tokens.combine(&quote! { #name: ::core::option::Option<#kind>, });
-                    }
-                    SignatureParamKind::ValueType | SignatureParamKind::Blittable => {
-                        let kind = self.type_default_name(&param.ty);
-                        tokens.combine(&quote! { #name: #kind, });
-                    }
-                    SignatureParamKind::Other => {
-                        let kind = self.type_default_name(&param.ty);
-                        tokens.combine(&quote! { #name: &#kind, });
-                    }
-                }
-            }
-    
-            tokens
+
+        if matches!(
+            sig_kind,
+            SignatureKind::Query(_) | SignatureKind::QueryOptional(_)
+        ) {
+            generics.push((make_ident!("T"), quote! { ::windows_core::ComInterface }));
         }
+
+        let (generics, where_clause) = if generics.is_empty() {
+            (None, None)
+        } else {
+            let generic = generics.iter().map(|(n, _)| n);
+            let generics = quote! {
+                <#(#generic),*>
+            };
+            let constraint = generics.into_iter().map(|n, c| {
+                quote! { #n: #c }
+            });
+            let where_clause = quote! {
+                where #(#constraint),*
+            };
+
+            (Some(generics), Some(where_clause))
+        };
+
+        let params = quote! {
+            #(#params),*
+        };
+
+        let args = quote! {
+            #(#args),*
+        };
+
+        MethodParts {
+            generics,
+            where_clause,
+            params,
+            args,
+        }
+    }
+}
+
+struct MethodParts {
+    generics: Option<TokenStream>,
+    where_clause: Option<TokenStream>,
+    params: TokenStream,
+    args: TokenStream,
+}
+
+enum Method<'r> {
+    Skip {
+        ident: Ident,
+    },
+    Emit {
+        /// The ident for the method, might be the same as `name`
+        ident: Ident,
+        /// The original name of the method
+        name: &'r str,
+        /// The method's signature
+        sig: Signature,
+    },
+}
+
+impl<'r> Emit<'r> {
+    fn method_iter(&self, iface: TypeDef) -> impl Iterator<Item = Method<'r>> {
+        let reader = self.reader;
+        let type_name = reader.type_def_type_name(iface);
+
+        let req_methods = self.get_interface_methods(type_name);
+
+        reader.type_def_methods(iface).filter_map(|meth| {
+            let name = reader.method_def_name(meth);
+            if name == ".ctor" {
+                return None;
+            }
+
+            let ident = self.config.make_ident(name, IdentKind::Field);
+
+            let meth = if !req_methods.map(|m| m.contains(name)).unwrap_or_default() {
+                Method::Skip { ident }
+            } else {
+                let sig = reader.method_def_signature(meth, &[]);
+
+                Method::Emit { ident, name, sig }
+            };
+
+            Some(meth)
+        })
     }
 }

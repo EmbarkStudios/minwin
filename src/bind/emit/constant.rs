@@ -53,7 +53,7 @@ impl<'r> super::Emit<'r> {
                 return Ok(());
             }
         } else if let Some(value) = reader.field_guid(def) {
-            let val = self.guid_printer(value);
+            let val = self.guid_printer(Some(value));
             let guid_ty = self.type_printer(Type::GUID);
 
             Some(quote! {

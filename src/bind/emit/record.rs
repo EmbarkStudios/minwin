@@ -11,7 +11,7 @@ impl<'r> super::Emit<'r> {
 
         if reader.type_def_fields(rec).count() == 0 {
             if let Some(value) = reader.type_def_guid(rec) {
-                let val = self.guid_printer(value);
+                let val = self.guid_printer(Some(value));
                 let guid_ty = self.type_printer(Type::GUID);
 
                 let ts = quote! {

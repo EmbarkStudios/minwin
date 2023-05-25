@@ -208,6 +208,27 @@ impl fmt::Display for EnumStyle {
     }
 }
 
+/// Determines the style used to emit enums
+#[derive(Copy, Clone, PartialEq, Eq, Default, serde::Deserialize)]
+pub enum COMStyle {
+    /// Emits bindgen style COM bindings
+    ///
+    /// The bindgen style uses excessive generics and includes a bunch of (usually)
+    /// unneccessary cruft
+    Bindgen,
+    /// Emits minwin style COM bindings
+    ///
+    /// Minwin style COM bindings attempt to be minimalistic but still cover most
+    /// typical scenarios
+    #[default]
+    Minwin,
+    /// Doesn't emit anything except the vtables.
+    ///
+    /// It is up to the user to provide the implementation for calling the COM
+    /// methods
+    None,
+}
+
 #[derive(serde::Deserialize, Copy, Clone)]
 #[serde(rename_all = "kebab-case")]
 pub struct MinwinBindConfig {
@@ -228,10 +249,8 @@ pub struct MinwinBindConfig {
     pub add_version_header: bool,
     /// If true, emits a link to the MSDN documentation for items that have it
     pub emit_docs: bool,
-    /// We don't emit actual implementations like `windows` has since they are
-    /// ridiculously overcomplicated and generic. However, it can be nice to have
-    /// little helpers if not using `windows-core`.
-    pub emit_com_helpers: bool,
+    /// The style used when emitting COM bindings
+    pub com_style: COMStyle,
 }
 
 impl Default for MinwinBindConfig {
@@ -246,7 +265,7 @@ impl Default for MinwinBindConfig {
             // We don't want this in tests
             add_version_header: !cfg!(debug_assertions),
             emit_docs: false,
-            emit_com_helpers: false,
+            com_style: Default::default(),
         }
     }
 }
@@ -346,10 +365,17 @@ pub fn bind<S: Into<String>>(
                 items: None,
             })
         }
-        BindConfig::Minwin(config) => {
+        BindConfig::Minwin(mut config) => {
             let gatherer =
                 gather::Gatherer::new(reader, items.iter().map(|(n, i)| (n.as_str(), *i)), &ifaces);
             let items = gatherer.gather();
+
+            // When emitting COM interfaces, it DOES make sense to use `windows-core`
+            // as a dependency as it _actually_ contains shared code that is
+            // useful and only need to be compiled once
+            if !ifaces.is_empty() && config.com_style != COMStyle::None {
+                config.use_core = true;
+            }
 
             let emit = emit::Emit {
                 items,

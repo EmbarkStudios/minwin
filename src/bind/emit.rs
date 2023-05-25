@@ -147,10 +147,8 @@ impl<'r> Emit<'r> {
                             "unable to emit '{ident}', classes are not supported"
                         );
 
-                        (
-                            ident,
-                            quote! { pub type #ident = *mut ::core::ffi::c_void; },
-                        )
+                        let ts = quote! { pub type #ident = *mut ::core::ffi::c_void; };
+                        (ident, ts)
                     }
                     TypeKind::Interface => {
                         self.emit_interface(&mut os, def);
