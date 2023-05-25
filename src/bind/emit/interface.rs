@@ -1,9 +1,8 @@
 use crate::bind::COMStyle;
 
 use super::*;
-use quote::{format_ident, TokenStreamExt};
 use syn::Ident;
-use wmr::{Signature, SignatureKind};
+use wmr::{ParamAttributes, Signature, SignatureKind, SignatureParamKind, TypeAttributes};
 
 impl<'r> Emit<'r> {
     pub(super) fn emit_interface(
@@ -15,25 +14,18 @@ impl<'r> Emit<'r> {
         let type_name = reader.type_def_type_name(iface);
         let ident = self.config.make_ident(type_name.name, IdentKind::Record);
 
-        if reader.type_def_flags(def).contains(TypeAttributes::WINRT) {
+        if reader.type_def_flags(iface).contains(TypeAttributes::WINRT) {
             anyhow::bail!(
                 "The WinRT interface '{}' is not supported in this mode, please use `bindgen` mode",
                 type_name.name
             );
         }
 
-        let Some(methods) = self.get_interface_methods(type_name) else {
-            os.insert_interface(iface, ident, quote! { pub type #ident = *mut ::core::ffi::c_void; });
+        if self.get_interface_methods(type_name).is_none() {
+            let ts = quote! { pub type #ident = *mut ::core::ffi::c_void; };
+            os.insert_interface(iface, ident, ts);
             return Ok(());
         };
-
-        // While we _could_ support this, it's not worth the effort for an extremely
-        // few amount of types that most crates won't ever use
-        anyhow::ensure!(
-            reader.type_def_generics(row).count() == 0 || self.config.use_core,
-            "'{}' requires the use of the `windows-core` crate",
-            type_name.name
-        );
 
         self.emit_vtable(os, iface)?;
 
@@ -69,7 +61,7 @@ impl<'r> Emit<'r> {
         }
 
         let name = reader.type_def_name(iface);
-        let ident = format_ident!("{name}_Vtbl");
+        let ident = quote::format_ident!("{name}_Vtbl");
 
         let mut fields = Vec::new();
 
@@ -96,7 +88,7 @@ impl<'r> Emit<'r> {
                 }
                 Type::TypeDef((def, _)) => {
                     let base_name = reader.type_def_name(*def);
-                    let base_name = format_ident!("{base_name}_Vtbl");
+                    let base_name = quote::format_ident!("{base_name}_Vtbl");
                     quote! { pub base__: #base_name }
                 }
                 _ => {
@@ -119,7 +111,7 @@ impl<'r> Emit<'r> {
                 });
 
                 quote! {
-                    pub #ident: unsafe extern "system" fn(#params)#ret
+                    pub #ident: unsafe extern "system" fn(this: *mut ::core::ffi::c_void, #params)#ret
                 }
             }
         }));
@@ -129,6 +121,7 @@ impl<'r> Emit<'r> {
         let (generics, phantoms) = (!generics.is_empty())
             .then(|| {
                 let names = generics.iter().map(|g| self.type_printer(g.clone()));
+                let names = quote! { <#(#names),*> };
 
                 let phantoms = generics.into_iter().map(|g| {
                     let tp = self.type_printer(g);
@@ -136,13 +129,13 @@ impl<'r> Emit<'r> {
                 });
 
                 (
-                    quote! { <#(#names),*> },
+                    names,
                     quote! {
                         #(#phantoms),*
                     },
                 )
             })
-            .map(|(g, p)| (Some(g), Some(p)));
+            .unzip();
 
         let ts = quote! {
             #[repr(C)]
@@ -207,7 +200,7 @@ impl<'r> Emit<'r> {
         let methods: Vec<_> = self
             .method_iter(iface)
             .filter_map(|meth| match meth {
-                Method::Emit { ident, name, sig } => {
+                Method::Emit { ident, sig, .. } => {
                     let mts = self.emit_method_impl(iface, ident, sig);
                     Some(mts)
                 }
@@ -233,13 +226,23 @@ impl<'r> Emit<'r> {
             }
         };
 
+        //let impls = self.emit_interface_impls(iface);
+
+        let imp = if methods.is_empty() {
+            None
+        } else {
+            Some(quote! {
+                impl #ident {
+                    #(#methods)*
+                }
+            })
+        };
+
         let its = quote! {
             #[repr(transparent)]
             pub struct #ident(::windows_core::IUnknown);
 
-            impl #ident {
-                #(#methods)
-            }
+            #imp
 
             #com_iface
         };
@@ -260,7 +263,7 @@ impl<'r> Emit<'r> {
     ///     }
     /// }
     /// ```
-    fn emit_method_impl(&self, iface: TypeDef, ident: Ident, sig: Signature) -> TokenStream {
+    fn emit_method_impl(&self, _iface: TypeDef, ident: Ident, sig: Signature) -> TokenStream {
         let reader = self.reader;
 
         let MethodParts {
@@ -273,51 +276,43 @@ impl<'r> Emit<'r> {
         let vtable = quote! { ::windows_core::Interface::vtable(self).#ident };
         let this = quote! { ::windows_core::Interface::as_raw(self) };
 
+        let mut rt = None;
+        let mut prefix = None;
+        let mut suffix = None;
+
         let sig_kind = reader.signature_kind(&sig);
         match sig_kind {
             // Methods which essentially wrap IUnknown::QueryInterface but are
             // specific to a particular type
             SignatureKind::Query(_) => {
-                quote! {
-                    pub unsafe fn #ident #generics (&self, #params) -> ::windows_core::Result<T> #where_clause {
-                        let mut result__ = ::std::mem::MaybeUninit::uninit();
-                        (#vtable)(#this, #args).from_abi(result__)
-                    }
-                }
+                rt = Some(quote! { -> ::windows_core::Result<T> });
+                prefix = Some(quote! { let mut result__ = ::std::mem::MaybeUninit::uninit(); });
+                suffix = Some(quote! { .from_abi(result__) });
             }
             // Ditto as above, but the result is optional and thus an out param instead
             SignatureKind::QueryOptional(_) => {
-                quote! {
-                    pub unsafe fn #ident #generics (&self, #params) -> ::windows_core::Result<()> #where_clause {
-                        (#vtable)(#this, #args).ok()
-                    }
-                }
+                rt = Some(quote! { -> ::windows_core::Result<()> });
+                suffix = Some(quote! { .ok() });
             }
             // Typical methods that returns a simple type or error
             SignatureKind::ResultValue => {
                 let return_type = sig.params.last().unwrap().ty.deref();
-                let rt = self.type_printer(return_type);
+                let ret = self.type_printer(return_type);
 
-                quote! {
-                    pub unsafe fn #ident #generics (&self, #params) -> ::windows_core::Result<#rt> #where_clause {
-                        let mut result__ = ::windows_core::zeroed::<#rt>();
-                        (#vtable)(#this, #args).from_abi(result__)
-                    }
-                }
+                rt = Some(quote! { -> ::windows_core::Result<#ret> });
+                prefix = Some(quote! { let mut result__ = ::windows_core::zeroed::<#ret>(); });
+                suffix = Some(quote! { .from_abi(result__) });
             }
             // Methods that don't return a value other than HRESULT
             SignatureKind::ResultVoid => {
-                quote! {
-                    pub unsafe fn #name #generics (&self, #params) -> ::windows_core::Result<()> #where_clause {
-                        (#vtable)(#this, #args).ok()
-                    }
-                }
+                rt = Some(quote! { -> ::windows_core::Result<()> });
+                suffix = Some(quote! { .ok() });
             }
             // Methods that infallibly return a value
             SignatureKind::ReturnValue => {
                 let return_type = sig.params.last().unwrap().ty.deref();
                 let is_nullable = reader.type_is_nullable(&return_type);
-                let rt = self.type_printer(return_type);
+                let ret = self.type_printer(return_type);
 
                 let res = if is_nullable {
                     quote! { ::windows_core::from_abi(result__) }
@@ -325,29 +320,25 @@ impl<'r> Emit<'r> {
                     quote! { ::std::mem::transmute(result__) }
                 };
 
-                quote! {
-                    pub unsafe fn #ident #generics (&self, #params) -> #rt #where_clause {
-                        let mut result__ = ::windows_core::zeroed::<#rt>();
-                        (#vtable)(#this, #args);
-                        #res
-                    }
-                }
+                rt = Some(quote! { -> #ret });
+                prefix = Some(quote! { let mut result__ = ::windows_core::zeroed::<#ret>(); });
+                suffix = Some(quote! { ;
+                    #res
+                });
             }
             // Methods that infallibly return a record via out param
             SignatureKind::ReturnStruct => {
-                let rt = self.type_printer(sig.return_type.as_ref().unwrap().clone());
+                let ret = self.type_printer(sig.return_type.as_ref().unwrap().clone());
 
-                quote! {
-                    pub unsafe fn #ident #generics (&self, #params) -> #rt #where_clause {
-                        let mut result__ = ::core::mem::zeroed::<#rt>();
-                        (#vtable)(#this, #args);
-                        result__
-                    }
-                }
+                rt = Some(quote! { -> #ret });
+                prefix = Some(quote! { let mut result__ = ::windows_core::zeroed::<#ret>(); });
+                suffix = Some(quote! { ;
+                    result__
+                });
             }
             // The return type is forwarded
             SignatureKind::PreserveSig => {
-                let rt = sig.return_type.as_ref().and_then(|rt| match rt {
+                rt = sig.return_type.as_ref().and_then(|rt| match rt {
                     Type::Void if reader.method_def_does_not_return(sig.def) => {
                         Some(quote! { -> ! })
                     }
@@ -357,20 +348,15 @@ impl<'r> Emit<'r> {
                         Some(quote! { -> #rt })
                     }
                 });
-
-                quote! {
-                    pub unsafe fn #ident #generics (&self, #params) #rt #where_clause {
-                        (#vtable)(#this, #args)
-                    }
-                }
             }
             // Methods that don't return anything
-            SignatureKind::ReturnVoid => {
-                quote! {
-                    pub unsafe fn #ident #generics (&self, #params) #where_clause {
-                        (#vtable)(#this, #args)
-                    }
-                }
+            SignatureKind::ReturnVoid => {}
+        }
+
+        quote! {
+            pub unsafe fn #ident #generics (&self, #params) #rt #where_clause {
+                #prefix
+                (#vtable)(#this, #args)#suffix
             }
         }
     }
@@ -412,7 +398,7 @@ impl<'r> Emit<'r> {
                     push_result_param = true;
                 }
                 SignatureKind::ReturnValue | SignatureKind::ResultValue
-                    if params.len() - 1 == pos =>
+                    if sig.params.len() - 1 == pos =>
                 {
                     args.push(quote! { &mut result__ });
                 }
@@ -425,7 +411,7 @@ impl<'r> Emit<'r> {
                         SignatureParamKind::ArrayFixed(fixed) => {
                             let ty = param.ty.deref();
                             let tp = self.type_printer(ty);
-                            let len = Literal::u32_unsuffixed(fixed as _);
+                            let len = pm::Literal::u32_unsuffixed(fixed as _);
                             let ty = if reader
                                 .param_flags(param.def)
                                 .contains(ParamAttributes::OUTPUT)
@@ -492,7 +478,7 @@ impl<'r> Emit<'r> {
                         }
                         SignatureParamKind::ArrayRelativePtr(_) => None,
                         SignatureParamKind::TryInto | SignatureParamKind::IntoParam => {
-                            let name = format_ident!("P{generic_index}");
+                            let name = quote::format_ident!("P{generic_index}");
                             let tp = self.type_printer(param.ty.clone());
 
                             if self.config.com_style == COMStyle::Bindgen {
@@ -503,7 +489,7 @@ impl<'r> Emit<'r> {
                                 };
 
                                 generics.push((name.clone(), constraint));
-                                Some(name.into())
+                                Some(quote::ToTokens::into_token_stream(name))
                             } else {
                                 Some(quote! { #tp })
                             }
@@ -539,10 +525,10 @@ impl<'r> Emit<'r> {
                         }
                         SignatureParamKind::ArrayRelativePtr(relative) => {
                             let name = self.config.make_ident(
-                                reader.param_name(params[relative].def),
+                                reader.param_name(sig.params[relative].def),
                                 IdentKind::Param,
                             );
-                            let flags = reader.param_flags(params[relative].def);
+                            let flags = reader.param_flags(sig.params[relative].def);
                             if flags.contains(ParamAttributes::OPTIONAL) {
                                 quote! { #name.as_deref().map_or(0, |slice| slice.len() as _) }
                             } else {
@@ -594,24 +580,27 @@ impl<'r> Emit<'r> {
             sig_kind,
             SignatureKind::Query(_) | SignatureKind::QueryOptional(_)
         ) {
-            generics.push((make_ident!("T"), quote! { ::windows_core::ComInterface }));
+            generics.push((
+                quote::format_ident!("T"),
+                quote! { ::windows_core::ComInterface },
+            ));
         }
 
         let (generics, where_clause) = if generics.is_empty() {
             (None, None)
         } else {
             let generic = generics.iter().map(|(n, _)| n);
-            let generics = quote! {
+            let generic_clause = quote! {
                 <#(#generic),*>
             };
-            let constraint = generics.into_iter().map(|n, c| {
+            let constraint = generics.into_iter().map(|(n, c)| {
                 quote! { #n: #c }
             });
             let where_clause = quote! {
                 where #(#constraint),*
             };
 
-            (Some(generics), Some(where_clause))
+            (Some(generic_clause), Some(where_clause))
         };
 
         let params = quote! {
@@ -653,13 +642,13 @@ enum Method<'r> {
 }
 
 impl<'r> Emit<'r> {
-    fn method_iter(&self, iface: TypeDef) -> impl Iterator<Item = Method<'r>> {
+    fn method_iter(&self, iface: TypeDef) -> impl Iterator<Item = Method<'r>> + '_ {
         let reader = self.reader;
         let type_name = reader.type_def_type_name(iface);
 
         let req_methods = self.get_interface_methods(type_name);
 
-        reader.type_def_methods(iface).filter_map(|meth| {
+        reader.type_def_methods(iface).filter_map(move |meth| {
             let name = reader.method_def_name(meth);
             if name == ".ctor" {
                 return None;
@@ -671,7 +660,6 @@ impl<'r> Emit<'r> {
                 Method::Skip { ident }
             } else {
                 let sig = reader.method_def_signature(meth, &[]);
-
                 Method::Emit { ident, name, sig }
             };
 

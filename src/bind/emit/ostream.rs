@@ -211,7 +211,7 @@ impl<'r> OutputStream<'r> {
         self.interfaces.get(&td).and_then(|iface| iface.vtable.as_ref()).is_some()
     }
 
-    pub fn finalize(self, config: crate::bind::MinwinBindConfig) -> TokenStream {
+    pub fn finalize(mut self, config: crate::bind::MinwinBindConfig) -> TokenStream {
         let mut root = self.root;
 
         for ((lib, is_system), functions) in self.functions {
@@ -250,6 +250,22 @@ impl<'r> OutputStream<'r> {
         for cts in self.constants.into_values() {
             root.extend(cts);
         }
+
+        self.types.extend(self.interfaces.into_iter().map(|(td, block)| {
+            let InterfaceBlock {
+                ident,
+                vtable,
+                imp,
+            } = block;
+            let ts = quote! {
+                #vtable
+                #imp
+            };
+            (Type::TypeDef((td, Vec::new())), TypeStream::Typedef(TypedefBlock {
+                ident,
+                ts: Some(ts),
+            }))
+        }));
 
         let type_blocks: BTreeMap<_, _> = self
             .types

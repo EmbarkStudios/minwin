@@ -1,4 +1,5 @@
 use crate::bind::{Impls, MinwinBindConfig};
+use anyhow::Context;
 use pm::Ident;
 use proc_macro2::{self as pm, TokenStream};
 use quote::{format_ident, quote, ToTokens, TokenStreamExt};
@@ -225,10 +226,10 @@ pub struct TypePrinter<'r> {
 
 impl<'r> TypePrinter<'r> {
     #[inline]
-    fn core_type(&self, name: &'static str) -> &'static str {
+    fn core_type(&self, name: &'static str, ts: &mut TokenStream) {
         const CORE_TYPES: &[(&'static str, &'static str)] = &[
             ("::windows_core::BSTR", "Bstr"),
-            ("::windows_core::Guid", "Guid"),
+            ("::windows_core::GUID", "Guid"),
             ("::windows_core::HRESULT", "Hresult"),
             ("::windows_core::PCSTR", "Pcstr"),
             ("::windows_core::PCWSTR", "Pcwstr"),
@@ -237,15 +238,18 @@ impl<'r> TypePrinter<'r> {
         ];
 
         if !self.config.use_core && !self.config.use_rust_casing {
-            name
+            ts.append(format_ident!("{name}"));
         } else {
-            CORE_TYPES
+            let ct = CORE_TYPES
                 .iter()
                 .find_map(|(n, g)| {
                     let us = &n[16..];
                     (us == name).then_some(if self.config.use_core { n } else { g })
                 })
-                .expect("unknown core type")
+                .with_context(|| format!("unknown core type '{name}'"))
+                .unwrap();
+
+            ts.extend(ct.parse::<TokenStream>().unwrap());
         }
     }
 
@@ -306,14 +310,35 @@ impl<'r> ToTokens for TypePrinter<'r> {
             Type::ISize => "isize",
             Type::USize => "usize",
             Type::Char => "u16",
-            Type::PCSTR => self.core_type("PCSTR"),
-            Type::PCWSTR => self.core_type("PCWSTR"),
-            Type::PSTR => self.core_type("PSTR"),
-            Type::PWSTR => self.core_type("PWSTR"),
-            Type::BSTR => self.core_type("BSTR"),
+            Type::PCSTR => {
+                self.core_type("PCSTR", ts);
+                return;
+            }
+            Type::PCWSTR => {
+                self.core_type("PCWSTR", ts);
+                return;
+            }
+            Type::PSTR => {
+                self.core_type("PSTR", ts);
+                return;
+            }
+            Type::PWSTR => {
+                self.core_type("PWSTR", ts);
+                return;
+            }
+            Type::BSTR => {
+                self.core_type("BSTR", ts);
+                return;
+            }
             Type::String => panic!("can't resolve unless format of string is known"),
-            Type::HRESULT => self.core_type("HRESULT"),
-            Type::GUID => self.core_type("GUID"),
+            Type::HRESULT => {
+                self.core_type("HRESULT", ts);
+                return;
+            }
+            Type::GUID => {
+                self.core_type("GUID", ts);
+                return;
+            }
             Type::IUnknown => {
                 if self.config.use_core {
                     ts.extend(quote! { ::windows_core::IUnknown });

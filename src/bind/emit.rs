@@ -151,7 +151,7 @@ impl<'r> Emit<'r> {
                         (ident, ts)
                     }
                     TypeKind::Interface => {
-                        self.emit_interface(&mut os, def);
+                        self.emit_interface(&mut os, def)?;
                         continue;
                     }
                     TypeKind::Enum => {
