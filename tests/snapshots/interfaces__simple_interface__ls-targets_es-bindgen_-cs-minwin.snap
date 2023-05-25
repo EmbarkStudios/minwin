@@ -1,0 +1,77 @@
+---
+source: tests/interfaces.rs
+expression: bo.bindings
+---
+#![allow(
+    non_snake_case,
+    non_upper_case_globals,
+    non_camel_case_types,
+    clippy::upper_case_acronyms
+)]
+#[repr(C)]
+pub struct IFileDialog_Vtbl {
+    pub base__: IModalWindow_Vtbl,
+    SetFileTypes: usize,
+    SetFileTypeIndex: usize,
+    GetFileTypeIndex: usize,
+    Advise: usize,
+    Unadvise: usize,
+    SetOptions: usize,
+    GetOptions: usize,
+    SetDefaultFolder: usize,
+    SetFolder: usize,
+    GetFolder: usize,
+    GetCurrentSelection: usize,
+    SetFileName: usize,
+    GetFileName: usize,
+    SetTitle: usize,
+    SetOkButtonLabel: usize,
+    SetFileNameLabel: usize,
+    pub GetResult: unsafe extern "system" fn(
+        this: *mut ::core::ffi::c_void,
+        ppsi: *mut IShellItem,
+    ) -> ::windows_core::HRESULT,
+    AddPlace: usize,
+    SetDefaultExtension: usize,
+    Close: usize,
+    SetClientGuid: usize,
+    ClearClientData: usize,
+    SetFilter: usize,
+}
+#[repr(transparent)]
+pub struct IFileDialog(::windows_core::IUnknown);
+impl IFileDialog {
+    pub unsafe fn GetResult(&self) -> ::windows_core::Result<IShellItem> {
+        let mut result__ = ::windows_core::zeroed::<IShellItem>();
+        (::windows_core::Interface::vtable(self)
+            .GetResult)(::windows_core::Interface::as_raw(self), &mut result__)
+            .from_abi(result__)
+    }
+}
+unsafe impl ::windows_core::ComInterface for IFileDialog {
+    const IID: ::windows_core::GUID = ::windows_core::GUID::from_u128(
+        0x42f85136_db7e_439c_85f1_e4075d135fc8,
+    );
+}
+#[repr(C)]
+pub struct IFileOpenDialog_Vtbl {
+    pub base__: IFileDialog_Vtbl,
+    GetResults: usize,
+    GetSelectedItems: usize,
+}
+#[repr(transparent)]
+pub struct IFileOpenDialog(::windows_core::IUnknown);
+unsafe impl ::windows_core::ComInterface for IFileOpenDialog {
+    const IID: ::windows_core::GUID = ::windows_core::GUID::from_u128(
+        0xd57c7288_d4ad_4768_be02_9d969532d960,
+    );
+}
+#[repr(C)]
+pub struct IModalWindow_Vtbl {
+    pub base__: ::windows_core::IUnknown_Vtbl,
+    Show: usize,
+}
+pub type IModalWindow = *mut ::core::ffi::c_void;
+pub type IShellItem = *mut ::core::ffi::c_void;
+pub type IShellItemArray = *mut ::core::ffi::c_void;
+

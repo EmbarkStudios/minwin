@@ -229,6 +229,16 @@ pub enum COMStyle {
     None,
 }
 
+impl fmt::Display for COMStyle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Bindgen => f.write_str("bindgen"),
+            Self::Minwin => f.write_str("minwin"),
+            Self::None => f.write_str("none"),
+        }
+    }
+}
+
 #[derive(serde::Deserialize, Copy, Clone)]
 #[serde(rename_all = "kebab-case")]
 pub struct MinwinBindConfig {
@@ -299,8 +309,8 @@ impl fmt::Display for BindConfig {
             Self::Bindgen => f.write_str("bindgen"),
             Self::Minwin(mwbc) => {
                 f.write_fmt(format_args!(
-                    "ls-{}_es-{}",
-                    mwbc.linking_style, mwbc.enum_style
+                    "ls-{}_es-{}_-cs-{}",
+                    mwbc.linking_style, mwbc.enum_style, mwbc.com_style
                 ))?;
 
                 if mwbc.use_core {
