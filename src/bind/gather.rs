@@ -339,6 +339,9 @@ bitflags::bitflags! {
     pub struct Impls: u8 {
         const COPY = 1 << 0 | Impls::CLONE.bits();
         const CLONE = 1 << 1;
+        const EQ = 1 << 2 | Impls::PARTIAL_EQ.bits();
+        const PARTIAL_EQ = 1 << 3;
+        const DEBUG = 1 << 4;
     }
 }
 
@@ -382,6 +385,9 @@ impl Item {
                     match imp {
                         "Copy" => ri.insert(Impls::COPY),
                         "Clone" => ri.insert(Impls::CLONE),
+                        "Eq" => ri.insert(Impls::EQ),
+                        "PartialEq" => ri.insert(Impls::PARTIAL_EQ),
+                        "Debug" => ri.insert(Impls::DEBUG),
                         unknown => {
                             anyhow::bail!("unknown record impl '{unknown}' for {bname}");
                         }
