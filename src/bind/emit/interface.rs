@@ -560,10 +560,11 @@ impl<'r> Emit<'r> {
                             }
                         }
                         SignatureParamKind::OptionalPointer => {
-                            let tp = self.type_printer(param.ty.clone());
                             if self.config.com_style == COMStyle::Bindgen {
+                                let tp = self.type_printer(param.ty.clone());
                                 Some(quote! { ::core::option::Option<#tp> })
                             } else {
+                                let tp = self.type_printer(param.ty.deref());
                                 Some(quote! { ::core::option::Option<::core::ptr::NonNull<#tp>> })
                             }
                         }
@@ -619,16 +620,22 @@ impl<'r> Emit<'r> {
                             }
                         }
                         SignatureParamKind::OptionalPointer => {
-                            let def = if flags.contains(ParamAttributes::OUTPUT) {
-                                quote! { unwrap_or(::std::ptr::null_mut()) }
-                            } else {
-                                quote! { unwrap_or(::std::ptr::null()) }
-                            };
-
                             if self.config.com_style == COMStyle::Bindgen {
+                                let def = if flags.contains(ParamAttributes::OUTPUT) {
+                                    quote! { unwrap_or(::std::ptr::null_mut()) }
+                                } else {
+                                    quote! { unwrap_or(::std::ptr::null()) }
+                                };
+
                                 quote! { ::core::mem::transmute(#name.#def) }
                             } else {
-                                quote! { #name.#def.cast() }
+                                let def = if flags.contains(ParamAttributes::OUTPUT) {
+                                    quote! { map_or(::std::ptr::null_mut(), std::ptr::NonNull::as_ptr) }
+                                } else {
+                                    quote! { map_or(::std::ptr::null(), |p| p.as_ptr() as *const _) }
+                                };
+
+                                quote! { #name.#def }
                             }
                         }
                         SignatureParamKind::ValueType => {
