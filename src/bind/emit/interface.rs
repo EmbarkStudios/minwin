@@ -82,24 +82,38 @@ impl<'r> Emit<'r> {
                 format!("the interface '{name}' does not have a base interface")
             })?;
 
+            use crate::bind::emit::ostream::Vtable;
             let pfield = match parent {
                 Type::IUnknown => {
                     if self.config.use_core {
                         quote! { pub base__: ::windows_core::IUnknown_Vtbl }
                     } else {
-                        quote! { pub base__: IUnknown_Vtbl }
+                        os.add_vtable(Vtable::IUNKNOWN);
+                        let base = format_ident!(
+                            "{}_Vtbl",
+                            self.config.make_ident("IUnknown", IdentKind::Record)
+                        );
+                        quote! { pub base__: #base }
                     }
                 }
                 Type::IInspectable => {
                     if self.config.use_core {
                         quote! { pub base__: ::windows_core::IInspectable_Vtbl }
                     } else {
-                        quote! { pub base__: IInspectable_Vtbl }
+                        os.add_vtable(Vtable::IINSPECTABLE);
+                        let base = format_ident!(
+                            "{}_Vtbl",
+                            self.config.make_ident("IInspectable", IdentKind::Record)
+                        );
+                        quote! { pub base__: #base }
                     }
                 }
                 Type::TypeDef((def, _)) => {
                     let base_name = reader.type_def_name(*def);
-                    let base_name = format_ident!("{base_name}_Vtbl");
+                    let base_name = format_ident!(
+                        "{}_Vtbl",
+                        self.config.make_ident(base_name, IdentKind::Record)
+                    );
                     quote! { pub base__: #base_name }
                 }
                 _ => {
@@ -204,14 +218,49 @@ impl<'r> Emit<'r> {
         ident: &Ident,
         os: &mut OutputStream,
     ) -> anyhow::Result<TokenStream> {
+        let reader = self.reader;
+
         if self.config.com_style == COMStyle::None {
+            // If the user requested the IID of the interface, emit it with
+            // the standard naming convention as opposed to inside the trait impl
+            let type_name = reader.type_def_type_name(iface);
+            let (iid, helper) = self
+                .get_interface_methods(type_name)
+                .map(|ms| {
+                    (
+                        ms.contains("+IID").then(|| {
+                            let guid = self.guid_printer(reader.type_def_guid(iface));
+                            let tp = self.type_printer(Type::GUID);
+                            let name = format_ident!("IID_{}", type_name.name);
+
+                            quote! {
+                                pub const #name: #tp = #guid;
+                            }
+                        }),
+                        ms.contains("+vtable").then(|| {
+                            let vtable = format_ident!("{ident}_Vtbl");
+
+                            // Add a simple helper to access the vtable
+                            quote! {
+                                impl #ident {
+                                    #[inline]
+                                    pub unsafe fn vtable(&self) -> &#vtable {
+                                        &(*self.0.as_ptr().cast::<#vtable>())
+                                    }
+                                }
+                            }
+                        }),
+                    )
+                })
+                .unzip();
+
             return Ok(quote! {
                 #[repr(transparent)]
-                pub struct #ident(::core::ptr::NonNull<::core::ffi::c_void>);
+                pub struct #ident(pub ::core::ptr::NonNull<::core::ffi::c_void>);
+                #helper
+                #iid
             });
         }
-
-        let reader = self.reader;
 
         let methods: Vec<_> = self
             .method_iter(iface)

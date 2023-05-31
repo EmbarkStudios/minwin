@@ -81,6 +81,14 @@ bitflags::bitflags! {
     }
 }
 
+bitflags::bitflags! {
+    #[derive(Copy, Clone)]
+    pub struct Vtable: u8 {
+        const IUNKNOWN = 0x1;
+        const IINSPECTABLE = 0x2;
+    }
+}
+
 pub struct OutputStream<'r> {
     reader: &'r Reader<'r>,
     pub(crate) root: TokenStream,
@@ -93,6 +101,7 @@ pub struct OutputStream<'r> {
     functions: BTreeMap<(Ustr, bool), BTreeMap<(Ident, Attrs), (MethodDef, TokenStream)>>,
     interfaces: BTreeMap<TypeDef, InterfaceBlock>,
     com_helpers: ComHelper,
+    vtables: Vtable,
 }
 
 impl<'r> OutputStream<'r> {
@@ -106,6 +115,7 @@ impl<'r> OutputStream<'r> {
             functions: BTreeMap::new(),
             interfaces: BTreeMap::new(),
             com_helpers: ComHelper::empty(),
+            vtables: Vtable::empty(),
         }
     }
 
@@ -226,6 +236,11 @@ impl<'r> OutputStream<'r> {
         self.com_helpers |= helper;
     }
 
+    #[inline]
+    pub fn add_vtable(&mut self, table: Vtable) {
+        self.vtables |= table;
+    }
+
     pub fn finalize(mut self, config: crate::bind::MinwinBindConfig) -> TokenStream {
         let mut root = self.root;
 
@@ -264,6 +279,73 @@ impl<'r> OutputStream<'r> {
 
         for cts in self.constants.into_values() {
             root.extend(cts);
+        }
+
+        // If we're only emitting COM vtables we need to add IUnknown and possibly
+        // IInspectable vtables manually since they are both built-in Type not typedefs
+        // 
+        // This is not a big deal since these definitions will never change
+        if self.vtables.contains(Vtable::IUNKNOWN) {
+            let ident = config.make_ident("IUnknown", IdentKind::Record);
+            let vtable = format_ident!("{ident}_Vtbl");
+            let query_interface = config.make_ident("QueryInterface", IdentKind::Field);
+            let add_ref = config.make_ident("AddRef", IdentKind::Field);
+            let release = config.make_ident("Release", IdentKind::Field);
+            let guid = TypePrinter {
+                r: self.reader,
+                ty: Type::GUID,
+                config,
+                simplify: false,
+            };
+
+            let ts = quote! {
+                #[repr(transparent)]
+                pub struct #ident(::core::ptr::NonNull<::std::ffi::c_void>);
+
+                #[repr(C)]
+                pub struct #vtable {
+                    pub #query_interface: unsafe extern "system" fn(this: *mut std::ffi::c_void, iid: *const #guid, interface: *mut *const ::std::ffi::c_void) -> HRESULT,
+                    pub #add_ref: unsafe extern "system" fn(this: *mut ::std::ffi::c_void) -> u32,
+                    pub #release: unsafe extern "system" fn(this: *mut ::std::ffi::c_void) -> u32,
+                }
+            };
+
+            self.types.insert(Type::IUnknown, TypeStream::Typedef(TypedefBlock {
+                ident,
+                ts: Some(ts),
+            }));
+
+            if self.vtables.contains(Vtable::IINSPECTABLE) {
+                let ident = config.make_ident("IInspectable", IdentKind::Record);
+                let ivtable = format_ident!("{ident}_Vtbl");
+                let get_iids = config.make_ident("GetIids", IdentKind::Field);
+                let get_runtime_class_name = config.make_ident("GetRuntimeClassName", IdentKind::Field);
+                let get_trust_level = config.make_ident("GetTrustLevel", IdentKind::Field);
+                let guid = TypePrinter {
+                    r: self.reader,
+                    ty: Type::GUID,
+                    config,
+                    simplify: false,
+                };
+    
+                let ts = quote! {
+                    #[repr(transparent)]
+                    pub struct #ident(::core::ptr::NonNull<::std::ffi::c_void>);
+    
+                    #[repr(C)]
+                    pub struct #ivtable {
+                        pub base: #vtable,
+                        pub #get_iids: unsafe extern "system" fn(this: *mut ::std::ffi::c_void, count: *mut u32, values: *mut *mut #guid) -> HRESULT,
+                        pub #get_runtime_class_name: unsafe extern "system" fn(this: *mut ::std::ffi::c_void, value: *mut *mut ::std::ffi::c_void) -> HRESULT,
+                        pub #get_trust_level: unsafe extern "system" fn(this: *mut ::std::ffi::c_void, value: *mut i32) -> HRESULT,
+                    }
+                };
+    
+                self.types.insert(Type::IUnknown, TypeStream::Typedef(TypedefBlock {
+                    ident,
+                    ts: Some(ts),
+                }));
+            }
         }
 
         self.types.extend(self.interfaces.into_iter().map(|(td, block)| {
