@@ -239,27 +239,40 @@ impl fmt::Display for COMStyle {
     }
 }
 
+const fn tru() -> bool {
+    true
+}
+
 #[derive(serde::Deserialize, Copy, Clone)]
 #[serde(rename_all = "kebab-case")]
 pub struct MinwinBindConfig {
     /// The linking style to use for extern functions
+    #[serde(default)]
     pub linking_style: LinkingStyle,
     /// The style of enums emitted, affects both declaration and usage
+    #[serde(default)]
     pub enum_style: EnumStyle,
     /// If true, the `windows-core` crate is used for various core types
     /// such as `HRESULT`
+    #[serde(default)]
     pub use_core: bool,
     /// If true, identifiers are fixed to remove pointless Hungarian notation
+    #[serde(default)]
     pub fix_naming: bool,
     /// If true, the casing of all items will be changed to follow Rust casing conventions
+    #[serde(default)]
     pub use_rust_casing: bool,
     /// If true, formats the output
+    #[serde(default = "tru")]
     pub pretty_print: bool,
     /// If true, emits a version header at the beginning of the bindings
+    #[serde(default = "tru")]
     pub add_version_header: bool,
     /// If true, emits a link to the MSDN documentation for items that have it
+    #[serde(default)]
     pub emit_docs: bool,
     /// The style used when emitting COM bindings
+    #[serde(default)]
     pub com_style: COMStyle,
 }
 
@@ -281,6 +294,7 @@ impl Default for MinwinBindConfig {
 }
 
 #[derive(serde::Deserialize)]
+#[serde(tag = "mode", content = "config", rename_all = "kebab-case")]
 pub enum BindConfig {
     /// Uses `windows-bindgen` to generate bindings.
     ///

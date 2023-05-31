@@ -96,7 +96,7 @@ fn search(opts: Search) -> anyhow::Result<()> {
 #[derive(serde::Deserialize)]
 struct Config {
     output: PathBuf,
-    #[serde(default)]
+    #[serde(default, rename = "bind-mode")]
     bind_config: BindConfig,
     #[serde(default)]
     binds: Vec<String>,
@@ -225,7 +225,7 @@ fn bind(opts: Bind) -> anyhow::Result<()> {
         if has_interfaces {
             let i = items.interfaces.into();
             interfaces += i;
-            i.emit("interaces");
+            i.emit("interfaces");
         }
     }
 
