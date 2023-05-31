@@ -222,6 +222,7 @@ pub struct TypePrinter<'r> {
     pub r: &'r wmr::Reader<'r>,
     pub ty: wmr::Type,
     pub config: MinwinBindConfig,
+    pub simplify: bool,
 }
 
 impl<'r> TypePrinter<'r> {
@@ -259,6 +260,7 @@ impl<'r> TypePrinter<'r> {
             r: self.r,
             ty,
             config: self.config,
+            simplify: self.simplify,
         }
     }
 }
@@ -340,6 +342,11 @@ impl<'r> ToTokens for TypePrinter<'r> {
                 return;
             }
             Type::IUnknown => {
+                if self.simplify {
+                    ts.extend(quote! { *mut ::core::ffi::c_void });
+                    return;
+                }
+
                 if self.config.use_core {
                     ts.extend(quote! { ::windows_core::IUnknown });
                     return;
@@ -348,6 +355,11 @@ impl<'r> ToTokens for TypePrinter<'r> {
                 }
             }
             Type::IInspectable => {
+                if self.simplify {
+                    ts.extend(quote! { *mut ::core::ffi::c_void });
+                    return;
+                }
+
                 if self.config.use_core {
                     ts.extend(quote! { ::windows_core::IInspectable });
                     return;
@@ -408,7 +420,12 @@ impl<'r> ToTokens for TypePrinter<'r> {
                         )
                     }
                     TypeKind::Class | TypeKind::Interface => {
-                        self.config.make_ident(name, IdentKind::Record)
+                        if self.simplify {
+                            ts.extend(quote! { *mut ::core::ffi::c_void });
+                            return;
+                        } else {
+                            self.config.make_ident(name, IdentKind::Record)
+                        }
                     }
                     TypeKind::Delegate => self.config.make_ident(name, IdentKind::FunctionPointer),
                     TypeKind::Enum => {
@@ -467,6 +484,7 @@ impl<'r, 's> ToTokens for ParamsPrinter<'r, 's> {
             let ty = TypePrinter {
                 ty: param.ty.clone(),
                 r: self.r,
+                simplify: true,
                 config: self.config,
             };
 
@@ -668,39 +686,6 @@ impl ToTokens for DocsPrinter {
     }
 }
 
-// pub(crate) struct GenericsPrinter {
-//     generics: Vec<(String, Type)>,
-//     config: MinwinBindConfig,
-// }
-
-// impl GenericsPrinter {
-//     #[inline]
-//     pub fn is_empty(&self) -> bool {
-//         self.generics.is_empty()
-//     }
-
-//     #[inline]
-//     pub fn push(&mut self, name: impl Into<String>, ty: Type) {
-//         self.generics.push((name.into(), ty))
-//     }
-
-//     pub fn constraints(&self) -> ConstraintsPrinter<'_> {
-//         ConstraintsPrinter { gp: self }
-//     }
-// }
-
-// pub(crate) struct ConstraintsPrinter<'gp> {
-//     gp: &'gp GenericsPrinter,
-// }
-
-// impl<'gp> ToTokens for ConstraintsPrinter<'gp> {
-//     fn to_tokens(&self, ts: &mut TokenStream) {
-//         ts.append('<');
-//         ts.append_separated(self.gp.generics.iter().map(|(s, _)| s), ',');
-//         ts.append('>');
-//     }
-// }
-
 impl<'r> super::Emit<'r> {
     #[inline]
     pub(crate) fn type_printer(&self, ty: Type) -> TypePrinter<'r> {
@@ -708,6 +693,7 @@ impl<'r> super::Emit<'r> {
             r: self.reader,
             ty,
             config: self.config,
+            simplify: false,
         }
     }
 
@@ -719,6 +705,7 @@ impl<'r> super::Emit<'r> {
                 r: self.reader,
                 ty: Type::GUID,
                 config: self.config,
+                simplify: false,
             },
         }
     }
@@ -824,69 +811,4 @@ impl<'r> super::Emit<'r> {
 
         self.reader.type_is_copyable(ty)
     }
-
-    // pub(crate) fn generics_printer(&self, td: TypeDef) -> GenericsPrinter {
-    //     let generics = self.reader.type_def_generics(iface).collect();
-
-    //     GenericsPrinter {
-    //         generics,
-    //         config: self.config,
-    //     }
-    // }
 }
-
-// pub fn generic_params<'b>(
-//     &'b self,
-//     params: &'b [SignatureParam],
-// ) -> impl Iterator<Item = (usize, &SignatureParam)> + 'b {
-//     params
-//         .iter()
-//         .filter(move |param| self.reader.signature_param_is_convertible(param))
-//         .enumerate()
-// }
-// /// The generic param names (i.e., `T` in `fn foo<T>()`)
-// pub fn constraint_generics(&self, params: &[SignatureParam]) -> TokenStream {
-//     let mut generics = self
-//         .generic_params(params)
-//         .map(|(position, _)| -> TokenStream { format!("P{position}").into() })
-//         .peekable();
-
-//     if generics.peek().is_some() {
-//         quote!(#(#generics),*)
-//     } else {
-//         TokenStream::new()
-//     }
-// }
-// /// A `where` clause for some constrained generic params
-// pub fn where_clause(&self, params: &[SignatureParam]) -> TokenStream {
-//     let constraints = self.param_constraints(params);
-
-//     if !constraints.is_empty() {
-//         quote!(where #constraints)
-//     } else {
-//         quote!()
-//     }
-// }
-// fn param_constraints(&self, params: &[SignatureParam]) -> TokenStream {
-//     let mut tokens = TokenStream::new();
-//     let gen_name = |position| {
-//         let name: TokenStream = format!("P{position}").into();
-//         name
-//     };
-//     for (position, param) in self.generic_params(params) {
-//         match param.kind {
-//             SignatureParamKind::TryInto => {
-//                 let name: TokenStream = gen_name(position);
-//                 let into = self.type_name(&param.ty);
-//                 tokens.combine(&quote! { #name: ::windows_core::TryIntoParam<#into>, });
-//             }
-//             SignatureParamKind::IntoParam => {
-//                 let name: TokenStream = gen_name(position);
-//                 let into = self.type_name(&param.ty);
-//                 tokens.combine(&quote! { #name: ::windows_core::IntoParam<#into>, });
-//             }
-//             _ => {}
-//         }
-//     }
-//     tokens
-// }

@@ -10,6 +10,10 @@ test_iface!(
             com_style: COMStyle::Bindgen,
             ..Default::default()
         }),
+        BindConfig::Minwin(MinwinBindConfig {
+            use_rust_casing: true,
+            ..Default::default()
+        }),
         //BindConfig::Bindgen, doesn't supported interfaces in 0.49
     ],
     [
@@ -17,5 +21,6 @@ test_iface!(
     {
         "Windows.Win32.UI.Shell.IFileOpenDialog" => [],
         "Windows.Win32.UI.Shell.IFileDialog" => ["GetResult"],
+        "Windows.Win32.UI.Shell.IModalWindow" => ["Show"],
     }
 );

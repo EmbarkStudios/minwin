@@ -278,6 +278,7 @@ impl<'r> OutputStream<'r> {
                                 r: self.reader,
                                 ty,
                                 config,
+                                simplify: false,
                             };
 
                             let mut ts = TokenStream::new();
@@ -326,6 +327,7 @@ impl<'r> OutputStream<'r> {
                         r: self.reader,
                         ty: eb.ty,
                         config,
+                        simplify: false,
                     };
 
                     let mut ts = TokenStream::new();
