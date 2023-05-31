@@ -73,6 +73,14 @@ enum TypeStream {
     Typedef(TypedefBlock),
 }
 
+bitflags::bitflags! {
+    #[derive(Copy, Clone)]
+    pub struct ComHelper: u8 {
+        const INTERFACE = 0x1;
+        const VALUE = 0x2;
+    }
+}
+
 pub struct OutputStream<'r> {
     reader: &'r Reader<'r>,
     pub(crate) root: TokenStream,
@@ -84,6 +92,7 @@ pub struct OutputStream<'r> {
     constants: BTreeMap<Ident, TokenStream>,
     functions: BTreeMap<(Ustr, bool), BTreeMap<(Ident, Attrs), (MethodDef, TokenStream)>>,
     interfaces: BTreeMap<TypeDef, InterfaceBlock>,
+    com_helpers: ComHelper,
 }
 
 impl<'r> OutputStream<'r> {
@@ -96,6 +105,7 @@ impl<'r> OutputStream<'r> {
             types: BTreeMap::new(),
             functions: BTreeMap::new(),
             interfaces: BTreeMap::new(),
+            com_helpers: ComHelper::empty(),
         }
     }
 
@@ -209,6 +219,11 @@ impl<'r> OutputStream<'r> {
     #[inline]
     pub fn has_vtable(&mut self, td: TypeDef) -> bool {
         self.interfaces.get(&td).and_then(|iface| iface.vtable.as_ref()).is_some()
+    }
+
+    #[inline]
+    pub fn add_com_helper(&mut self, helper: ComHelper) {
+        self.com_helpers |= helper;
     }
 
     pub fn finalize(mut self, config: crate::bind::MinwinBindConfig) -> TokenStream {
@@ -420,6 +435,32 @@ impl<'r> OutputStream<'r> {
 
                 #arches
                 use #mn::*;
+            });
+        }
+
+        if self.com_helpers.contains(ComHelper::INTERFACE) {
+            root.extend(quote!{
+                #[inline]
+                unsafe fn wrap_interface_result<T>(hresult: ::windows_core::HRESULT, res: ::std::mem::MaybeUninit<*mut ::std::ffi::c_void>) -> ::windows_core::Result<T> {
+                    if hresult.is_ok() {
+                        Ok(std::mem::transmute_copy(&res.assume_init()))
+                    } else {
+                        Err(::windows_core::Error::from(hresult))
+                    }
+                }
+            });
+        }
+
+        if self.com_helpers.contains(ComHelper::VALUE) {
+            root.extend(quote!{
+                #[inline]
+                unsafe fn wrap_value_result<T>(hresult: ::windows_core::HRESULT, res: ::std::mem::MaybeUninit<T>) -> ::windows_core::Result<T> {
+                    if hresult.is_ok() {
+                        Ok(res.assume_init())
+                    } else {
+                        Err(::windows_core::Error::from(hresult))
+                    }
+                }
             });
         }
 

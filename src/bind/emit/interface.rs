@@ -40,7 +40,7 @@ impl<'r> Emit<'r> {
 
         self.emit_vtable(os, iface)?;
 
-        let ts = self.emit_interface_impl(iface, &ident)?;
+        let ts = self.emit_interface_impl(iface, &ident, os)?;
         os.insert_interface(iface, ident, ts);
 
         Ok(())
@@ -198,7 +198,12 @@ impl<'r> Emit<'r> {
     ///     const IID: ::windows_core::GUID = ::windows_core::GUID::from_u128(0xb4db1657_70d7_485e_8e3e_6fcb5a5c1802);
     /// }
     /// ```
-    fn emit_interface_impl(&self, iface: TypeDef, ident: &Ident) -> anyhow::Result<TokenStream> {
+    fn emit_interface_impl(
+        &self,
+        iface: TypeDef,
+        ident: &Ident,
+        os: &mut OutputStream,
+    ) -> anyhow::Result<TokenStream> {
         if self.config.com_style == COMStyle::None {
             return Ok(quote! {
                 #[repr(transparent)]
@@ -212,6 +217,17 @@ impl<'r> Emit<'r> {
             .method_iter(iface)
             .filter_map(|meth| match meth {
                 Method::Emit { ident, sig, .. } => {
+                    use crate::bind::emit::ostream::ComHelper;
+                    match reader.signature_kind(&sig) {
+                        SignatureKind::Query(_) => {
+                            os.add_com_helper(ComHelper::INTERFACE);
+                        }
+                        SignatureKind::ResultValue => {
+                            os.add_com_helper(ComHelper::VALUE);
+                        }
+                        _ => {}
+                    }
+
                     let mts = self.emit_method_impl(iface, ident, sig);
                     Some(mts)
                 }
@@ -317,7 +333,7 @@ impl<'r> Emit<'r> {
                 } else {
                     quote! {
                         let mut result__ = ::std::mem::MaybeUninit::uninit();
-                        ::com_helpers::return_interface((#vtable)(#this, #args), result__)
+                        wrap_interface_result((#vtable)(#this, #args), result__)
                     }
                 }
             }
@@ -342,8 +358,8 @@ impl<'r> Emit<'r> {
                     }
                 } else {
                     quote! {
-                        let mut result__ = ::std::mem::zeroed::<#ret>();
-                        ::com_helpers::return_value((#vtable)(#this, #args), result__)
+                        let mut result__ = ::std::mem::MaybeUninit::<#ret>::uninit();
+                        wrap_value_result((#vtable)(#this, #args), result__)
                     }
                 }
             }
@@ -451,7 +467,11 @@ impl<'r> Emit<'r> {
 
             match sig_kind {
                 SignatureKind::Query(query) if query.object == pos => {
-                    args.push(quote! { &mut result__ });
+                    if self.config.com_style == COMStyle::Bindgen {
+                        args.push(quote! { &mut result__ });
+                    } else {
+                        args.push(quote! { result__.as_mut_ptr() });
+                    }
                 }
                 SignatureKind::Query(query) | SignatureKind::QueryOptional(query)
                     if query.guid == pos =>
@@ -465,7 +485,11 @@ impl<'r> Emit<'r> {
                 SignatureKind::ReturnValue | SignatureKind::ResultValue
                     if sig.params.len() - 1 == pos =>
                 {
-                    args.push(quote! { &mut result__ });
+                    if self.config.com_style == COMStyle::Bindgen {
+                        args.push(quote! { &mut result__ });
+                    } else {
+                        args.push(quote! { result__.as_mut_ptr().cast() });
+                    }
                 }
                 _ => {
                     let name = self
