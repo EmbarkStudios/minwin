@@ -286,9 +286,18 @@ impl<'r> OutputStream<'r> {
                             for ec in eb.constants {
                                 let name = ec.name;
                                 let val = ec.value;
-                                ts.extend(quote! {
-                                    pub const #name: #typ = #val as _;
-                                });
+
+                                let cs = if config.use_core {
+                                    quote! {
+                                        pub const #name: #typ = #typ(#val);
+                                    }
+                                } else {
+                                    quote! {
+                                        pub const #name: #typ = #val as _;
+                                    }
+                                };
+
+                                ts.extend(cs);
                             }
 
                             return (typ.into_token_stream().to_string(), ts);
